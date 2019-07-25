@@ -29,12 +29,23 @@ import spray.json.JsObject
 import spray.json._
 import org.apache.openwhisk.common.{Logging, LoggingMarkers, TransactionId}
 import org.apache.openwhisk.core.ConfigKeys
+import org.apache.openwhisk.core.connector.ActivationMessage
+import org.apache.openwhisk.core.containerpool.logging.LogCollectingException
+import org.apache.openwhisk.core.database.UserContext
 import org.apache.openwhisk.core.entity.ActivationResponse.{ContainerConnectionError, ContainerResponse}
-import org.apache.openwhisk.core.entity.SizeUnits.MB
-import org.apache.openwhisk.core.entity.{ActivationEntityLimit, ActivationResponse, ByteSize}
+import org.apache.openwhisk.core.entity.{
+  ActivationEntityLimit,
+  ActivationId,
+  ActivationLogs,
+  ActivationResponse,
+  ByteSize,
+  ExecutableWhiskAction,
+  Identity,
+  Parameters,
+  WhiskActivation
+}
 
 /** important, otherwise the config cannot be read correctly */
-
 import org.apache.openwhisk.core.entity.size._
 
 import org.apache.openwhisk.http.Messages
@@ -43,12 +54,11 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration.{Duration, FiniteDuration, _}
 import scala.util.{Failure, Success}
 
-
 /**
-  * An OpenWhisk biased container abstraction. This is **not only** an abstraction
-  * for different container providers, but the implementation also needs to include
-  * OpenWhisk specific behavior, especially for initialize and run.
-  */
+ * An OpenWhisk biased container abstraction. This is **not only** an abstraction
+ * for different container providers, but the implementation also needs to include
+ * OpenWhisk specific behavior, especially for initialize and run.
+ */
 case class ContainerId(asString: String) {
   require(asString.nonEmpty, "ContainerId must not be empty")
 }
@@ -57,13 +67,19 @@ case class ContainerAddress(host: String, port: Int = 8080) {
   require(host.nonEmpty, "ContainerIp must not be empty")
 }
 
+case class ActivationStoreOptions(
+  action: ExecutableWhiskAction,
+  msg: ActivationMessage,
+  storeActivation: (TransactionId, WhiskActivation, UserContext) => Future[Any],
+  collectLogs: (TransactionId, Identity, WhiskActivation, Container, ExecutableWhiskAction) => Future[ActivationLogs])
+
 object Container {
 
   /**
-    * The action proxies insert this line in the logs at the end of each activation for stdout/stderr.
-    *
-    * Note: Blackbox containers might not add this sentinel, as we cannot be sure the action developer actually does this.
-    */
+   * The action proxies insert this line in the logs at the end of each activation for stdout/stderr.
+   *
+   * Note: Blackbox containers might not add this sentinel, as we cannot be sure the action developer actually does this.
+   */
   val ACTIVATION_LOG_SENTINEL = "XXX_THE_END_OF_A_WHISK_ACTIVATION_XXX"
 
   protected[containerpool] val config: ContainerPoolConfig =
@@ -71,10 +87,10 @@ object Container {
 }
 
 /**
-  * Abstraction for Container operations.
-  * Container manipulation (specifically suspend/resume/destroy) is NOT thread-safe and MUST be synchronized by caller.
-  * Container access (specifically run) is thread-safe (e.g. for concurrent activation processing).
-  */
+ * Abstraction for Container operations.
+ * Container manipulation (specifically suspend/resume/destroy) is NOT thread-safe and MUST be synchronized by caller.
+ * Container access (specifically run) is thread-safe (e.g. for concurrent activation processing).
+ */
 trait Container {
 
   implicit protected val as: ActorSystem
@@ -90,22 +106,18 @@ trait Container {
   protected var containerHttpMaxConcurrent: Int = 1
   protected var containerHttpTimeout: FiniteDuration = 60.seconds
 
-
   protected var onStartHandlerOK = false
   protected var onPauseHandlerOK = false
   protected var onFinishHandlerOK = false
 
+  protected var activationStoreOptions: ActivationStoreOptions = _
 
   def containerId: ContainerId = id
 
   /** Stops the container from consuming CPU cycles. NOT thread-safe - caller must synchronize. */
   def suspend()(implicit transid: TransactionId): Future[Unit] = {
     val waitForHandler = if (onPauseHandlerOK) {
-      callContainer("/onpause", JsObject(), FiniteDuration.apply(1, MINUTES), 1, retry = true)
-        .flatMap { _ =>
-          logs(ByteSize(1, MB), false)
-          Future.successful({})
-        }
+      callLifecycleHook("onpause")
     } else {
       Future.successful({})
     }
@@ -132,11 +144,7 @@ trait Container {
   /** Completely destroys this instance of the container. */
   def destroy()(implicit transid: TransactionId): Future[Unit] = {
     val waitForHandler = if (onFinishHandlerOK) {
-      callContainer("/onfinish", JsObject(), FiniteDuration.apply(1, MINUTES), 1, retry = true)
-        .flatMap { _ =>
-          logs(ByteSize(1, MB), false)
-          Future.successful({})
-        }
+      callLifecycleHook("onfinish")
     } else {
       Future.successful({})
     }
@@ -146,11 +154,87 @@ trait Container {
     }
   }
 
-  /** Initializes code in the container. */
-  def initialize(initializer: JsObject, timeout: FiniteDuration, maxConcurrent: Int)(
-    implicit transid: TransactionId): Future[Interval] = {
+  def callLifecycleHook(handlerType: String, initDuration: Long = 0)(implicit transid: TransactionId): Future[Unit] = {
 
-    //Den (job: Run) übergeben/speichern um ihn für neue Activations als vorlage zu haben
+    val start = Instant.now().minusMillis(initDuration)
+
+    //TODO JsObject() mit richtigen Daten füllen
+    callContainer("/" + handlerType, JsObject(), containerHttpTimeout, containerHttpMaxConcurrent)
+      .flatMap { result =>
+        val end = Instant.now()
+
+        val activation = WhiskActivation(
+          activationStoreOptions.msg.user.namespace.name.toPath,
+          activationStoreOptions.action.name,
+          activationStoreOptions.msg.user.subject,
+          ActivationId.generate(),
+          start,
+          end,
+          None,
+          ActivationResponse.success(),
+          ActivationLogs(),
+          activationStoreOptions.action.version,
+          publish = false, {
+            Parameters(WhiskActivation.limitsAnnotation, activationStoreOptions.action.limits.toJson) ++
+              Parameters(
+                WhiskActivation.pathAnnotation,
+                JsString(activationStoreOptions.action.fullyQualifiedName(false).asString)) ++
+              Parameters(WhiskActivation.kindAnnotation, JsString(activationStoreOptions.action.exec.kind)) ++
+              Parameters(WhiskActivation.timeoutAnnotation, JsBoolean(result.interval.duration >= containerHttpTimeout)) ++
+              Parameters("lifecycle_hook_type", handlerType)
+          },
+          Some(Interval(start, end).duration.toMillis))
+
+        /** Indicates reading logs for an activation failed (terminally, truncated) */
+        case class ActivationLogReadingError(activation: WhiskActivation) extends ActivationError
+
+        /** Indicates that something went wrong with an activation and the container should be removed */
+        trait ActivationError extends Exception {
+          val activation: WhiskActivation
+        }
+
+        val activationWithLogs =
+          // Skips log collection entirely, if the limit is set to 0
+          if (activationStoreOptions.action.limits.logs.asMegaBytes == 0.MB) {
+            Future.successful(Right(activation))
+          } else {
+            val start = transid.started(this, LoggingMarkers.INVOKER_COLLECT_LOGS, logLevel = InfoLevel)
+            activationStoreOptions
+              .collectLogs(transid, activationStoreOptions.msg.user, activation, this, activationStoreOptions.action)
+              .andThen {
+                case Success(_) => transid.finished(this, start)
+                case Failure(t) => transid.failed(this, start, s"reading logs failed: $t")
+              }
+              .map(logs => Right(activation.withLogs(logs)))
+              .recover {
+                case LogCollectingException(logs) =>
+                  Left(ActivationLogReadingError(activation.withLogs(logs)))
+                case _ =>
+                  Left(ActivationLogReadingError(activation.withLogs(ActivationLogs(Vector(Messages.logFailure)))))
+              }
+
+          }
+
+        activationWithLogs
+          .map(_.fold(_.activation, identity))
+          .foreach { activation =>
+            // Storing the record. Entirely asynchronous and not waited upon.
+            activationStoreOptions.storeActivation(transid, activation, UserContext(activationStoreOptions.msg.user))
+          }
+
+        activationWithLogs.flatMap { _ =>
+          Future.successful({})
+        }
+      }
+  }
+
+  /** Initializes code in the container. */
+  def initialize(initializer: JsObject,
+                 timeout: FiniteDuration,
+                 maxConcurrent: Int,
+                 activationStoreOptions: ActivationStoreOptions)(implicit transid: TransactionId): Future[Interval] = {
+
+    this.activationStoreOptions = activationStoreOptions
 
     val start = transid.started(
       this,
@@ -176,25 +260,17 @@ trait Container {
         result.response match {
           case Left(_) =>
           case Right(value) =>
-            transid.mark(this, LoggingMarkers.INVOKER_ACTIVATION_INIT, value.entity, InfoLevel)
-
             val resp = value.entity.parseJson.asJsObject
             onStartHandlerOK = resp.fields.getOrElse("onStartHandlerOK", JsFalse) == JsTrue
             onPauseHandlerOK = resp.fields.getOrElse("onPauseHandlerOK", JsFalse) == JsTrue
             onFinishHandlerOK = resp.fields.getOrElse("onFinishHandlerOK", JsFalse) == JsTrue
-
-            val s = onStartHandlerOK.toString ++ " " ++ onPauseHandlerOK.toString ++ " " ++ onFinishHandlerOK.toString
-            transid.mark(this, LoggingMarkers.INVOKER_ACTIVATION_INIT, s, InfoLevel)
         }
         Future.successful(result)
       }
       .flatMap { result =>
         if (onStartHandlerOK) {
-          //JsObject() mit richtigen Daten füllen
-          //logs richtig sammeln und Activation generieren und Speichern
-          callContainer("/onstart", JsObject(), timeout, maxConcurrent, retry = true).map { _ =>
-            logs(ByteSize(1, MB), false)
-            result
+          callLifecycleHook("onstart", result.interval.duration.toMillis).flatMap { _ =>
+            Future.successful(result)
           }
         } else {
           Future.successful(result)
@@ -254,15 +330,15 @@ trait Container {
   }
 
   /**
-    * Makes an HTTP request to the container.
-    *
-    * Note that `http.post` will not throw an exception, hence the generated Future cannot fail.
-    *
-    * @param path    relative path to use in the http request
-    * @param body    body to send
-    * @param timeout timeout of the request
-    * @param retry   whether or not to retry the request
-    */
+   * Makes an HTTP request to the container.
+   *
+   * Note that `http.post` will not throw an exception, hence the generated Future cannot fail.
+   *
+   * @param path    relative path to use in the http request
+   * @param body    body to send
+   * @param timeout timeout of the request
+   * @param retry   whether or not to retry the request
+   */
   protected def callContainer(path: String,
                               body: JsObject,
                               timeout: FiniteDuration,
@@ -299,7 +375,7 @@ trait Container {
   }
 
   /** This is so that we can easily log the container id during ContainerPool.logContainerStart().
-    * Null check is here since some tests use stub[Container] so id is null during those tests. */
+   * Null check is here since some tests use stub[Container] so id is null during those tests. */
   override def toString() = if (id == null) "no-container-id" else id.toString
 }
 

@@ -547,8 +547,13 @@ class ContainerProxy(
       case data: WarmedData =>
         Future.successful(None)
       case _ =>
+        val options = ActivationStoreOptions(job.action, job.msg, storeActivation, collectLogs)
         container
-          .initialize(job.action.containerInitializer, actionTimeout, job.action.limits.concurrency.maxConcurrent)
+          .initialize(
+            job.action.containerInitializer,
+            actionTimeout,
+            job.action.limits.concurrency.maxConcurrent,
+            options)
           .map(Some(_))
     }
 
@@ -590,7 +595,7 @@ class ContainerProxy(
               ContainerProxy.constructWhiskActivation(
                 job,
                 initInterval,
-                initRunInterval,
+                runInterval,
                 runInterval.duration >= actionTimeout,
                 response)
           }
@@ -767,6 +772,7 @@ object ContainerProxy {
           Parameters(WhiskActivation.pathAnnotation, JsString(job.action.fullyQualifiedName(false).asString)) ++
           Parameters(WhiskActivation.kindAnnotation, JsString(job.action.exec.kind)) ++
           Parameters(WhiskActivation.timeoutAnnotation, JsBoolean(isTimeout)) ++
+          Parameters("lifecycle_hook_type", "onrun") ++
           causedBy ++ initTime ++ binding
       })
   }
