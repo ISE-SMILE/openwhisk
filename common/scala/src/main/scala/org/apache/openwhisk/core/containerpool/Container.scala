@@ -26,25 +26,33 @@ import akka.util.ByteString
 import pureconfig._
 import spray.json.DefaultJsonProtocol._
 import spray.json.JsObject
+import spray.json._
 import org.apache.openwhisk.common.{Logging, LoggingMarkers, TransactionId}
 import org.apache.openwhisk.core.ConfigKeys
 import org.apache.openwhisk.core.entity.ActivationResponse.{ContainerConnectionError, ContainerResponse}
+import org.apache.openwhisk.core.entity.SizeUnits.MB
 import org.apache.openwhisk.core.entity.{ActivationEntityLimit, ActivationResponse, ByteSize}
+
+/** important, otherwise the config cannot be read correctly */
+
 import org.apache.openwhisk.core.entity.size._
+
 import org.apache.openwhisk.http.Messages
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration.{Duration, FiniteDuration, _}
 import scala.util.{Failure, Success}
 
+
 /**
- * An OpenWhisk biased container abstraction. This is **not only** an abstraction
- * for different container providers, but the implementation also needs to include
- * OpenWhisk specific behavior, especially for initialize and run.
- */
+  * An OpenWhisk biased container abstraction. This is **not only** an abstraction
+  * for different container providers, but the implementation also needs to include
+  * OpenWhisk specific behavior, especially for initialize and run.
+  */
 case class ContainerId(asString: String) {
   require(asString.nonEmpty, "ContainerId must not be empty")
 }
+
 case class ContainerAddress(host: String, port: Int = 8080) {
   require(host.nonEmpty, "ContainerIp must not be empty")
 }
@@ -52,10 +60,10 @@ case class ContainerAddress(host: String, port: Int = 8080) {
 object Container {
 
   /**
-   * The action proxies insert this line in the logs at the end of each activation for stdout/stderr.
-   *
-   * Note: Blackbox containers might not add this sentinel, as we cannot be sure the action developer actually does this.
-   */
+    * The action proxies insert this line in the logs at the end of each activation for stdout/stderr.
+    *
+    * Note: Blackbox containers might not add this sentinel, as we cannot be sure the action developer actually does this.
+    */
   val ACTIVATION_LOG_SENTINEL = "XXX_THE_END_OF_A_WHISK_ACTIVATION_XXX"
 
   protected[containerpool] val config: ContainerPoolConfig =
@@ -63,10 +71,10 @@ object Container {
 }
 
 /**
- * Abstraction for Container operations.
- * Container manipulation (specifically suspend/resume/destroy) is NOT thread-safe and MUST be synchronized by caller.
- * Container access (specifically run) is thread-safe (e.g. for concurrent activation processing).
- */
+  * Abstraction for Container operations.
+  * Container manipulation (specifically suspend/resume/destroy) is NOT thread-safe and MUST be synchronized by caller.
+  * Container access (specifically run) is thread-safe (e.g. for concurrent activation processing).
+  */
 trait Container {
 
   implicit protected val as: ActorSystem
@@ -82,18 +90,37 @@ trait Container {
   protected var containerHttpMaxConcurrent: Int = 1
   protected var containerHttpTimeout: FiniteDuration = 60.seconds
 
+
+  protected var onStartHandlerOK = false
+  protected var onPauseHandlerOK = false
+  protected var onFinishHandlerOK = false
+
+
   def containerId: ContainerId = id
 
   /** Stops the container from consuming CPU cycles. NOT thread-safe - caller must synchronize. */
   def suspend()(implicit transid: TransactionId): Future[Unit] = {
-    //close connection first, then close connection pool
-    //(testing pool recreation vs connection closing, time was similar - so using the simpler recreation approach)
-    val toClose = httpConnection
-    httpConnection = None
-    closeConnections(toClose)
+    val waitForHandler = if (onPauseHandlerOK) {
+      callContainer("/onpause", JsObject(), FiniteDuration.apply(1, MINUTES), 1, retry = true)
+        .flatMap { _ =>
+          logs(ByteSize(1, MB), false)
+          Future.successful({})
+        }
+    } else {
+      Future.successful({})
+    }
+
+    waitForHandler.flatMap { _ =>
+      //close connection first, then close connection pool
+      //(testing pool recreation vs connection closing, time was similar - so using the simpler recreation approach)
+      val toClose = httpConnection
+      httpConnection = None
+      closeConnections(toClose)
+    }
+
   }
 
-  /** Dual of halt. NOT thread-safe - caller must synchronize.*/
+  /** Dual of halt. NOT thread-safe - caller must synchronize. */
   def resume()(implicit transid: TransactionId): Future[Unit] = {
     httpConnection = Some(openConnections(containerHttpTimeout, containerHttpMaxConcurrent))
     Future.successful({})
@@ -104,12 +131,27 @@ trait Container {
 
   /** Completely destroys this instance of the container. */
   def destroy()(implicit transid: TransactionId): Future[Unit] = {
-    closeConnections(httpConnection)
+    val waitForHandler = if (onFinishHandlerOK) {
+      callContainer("/onfinish", JsObject(), FiniteDuration.apply(1, MINUTES), 1, retry = true)
+        .flatMap { _ =>
+          logs(ByteSize(1, MB), false)
+          Future.successful({})
+        }
+    } else {
+      Future.successful({})
+    }
+
+    waitForHandler.flatMap { _ =>
+      closeConnections(httpConnection)
+    }
   }
 
   /** Initializes code in the container. */
   def initialize(initializer: JsObject, timeout: FiniteDuration, maxConcurrent: Int)(
     implicit transid: TransactionId): Future[Interval] = {
+
+    //Den (job: Run) übergeben/speichern um ihn für neue Activations als vorlage zu haben
+
     val start = transid.started(
       this,
       LoggingMarkers.INVOKER_ACTIVATION_INIT,
@@ -129,6 +171,34 @@ trait Container {
             logLevel = InfoLevel)
         case Failure(t) =>
           transid.failed(this, start, s"initializiation failed with $t")
+      }
+      .flatMap { result =>
+        result.response match {
+          case Left(_) =>
+          case Right(value) =>
+            transid.mark(this, LoggingMarkers.INVOKER_ACTIVATION_INIT, value.entity, InfoLevel)
+
+            val resp = value.entity.parseJson.asJsObject
+            onStartHandlerOK = resp.fields.getOrElse("onStartHandlerOK", JsFalse) == JsTrue
+            onPauseHandlerOK = resp.fields.getOrElse("onPauseHandlerOK", JsFalse) == JsTrue
+            onFinishHandlerOK = resp.fields.getOrElse("onFinishHandlerOK", JsFalse) == JsTrue
+
+            val s = onStartHandlerOK.toString ++ " " ++ onPauseHandlerOK.toString ++ " " ++ onFinishHandlerOK.toString
+            transid.mark(this, LoggingMarkers.INVOKER_ACTIVATION_INIT, s, InfoLevel)
+        }
+        Future.successful(result)
+      }
+      .flatMap { result =>
+        if (onStartHandlerOK) {
+          //JsObject() mit richtigen Daten füllen
+          //logs richtig sammeln und Activation generieren und Speichern
+          callContainer("/onstart", JsObject(), timeout, maxConcurrent, retry = true).map { _ =>
+            logs(ByteSize(1, MB), false)
+            result
+          }
+        } else {
+          Future.successful(result)
+        }
       }
       .flatMap { result =>
         if (result.ok) {
@@ -184,15 +254,15 @@ trait Container {
   }
 
   /**
-   * Makes an HTTP request to the container.
-   *
-   * Note that `http.post` will not throw an exception, hence the generated Future cannot fail.
-   *
-   * @param path relative path to use in the http request
-   * @param body body to send
-   * @param timeout timeout of the request
-   * @param retry whether or not to retry the request
-   */
+    * Makes an HTTP request to the container.
+    *
+    * Note that `http.post` will not throw an exception, hence the generated Future cannot fail.
+    *
+    * @param path    relative path to use in the http request
+    * @param body    body to send
+    * @param timeout timeout of the request
+    * @param retry   whether or not to retry the request
+    */
   protected def callContainer(path: String,
                               body: JsObject,
                               timeout: FiniteDuration,
@@ -211,6 +281,7 @@ trait Container {
         RunResult(Interval(started, finished), response)
       }
   }
+
   private def openConnections(timeout: FiniteDuration, maxConcurrent: Int) = {
     if (Container.config.akkaClient) {
       new AkkaContainerClient(addr.host, addr.port, timeout, ActivationEntityLimit.MAX_ACTIVATION_ENTITY_LIMIT, 1024)
@@ -222,12 +293,13 @@ trait Container {
         maxConcurrent)
     }
   }
+
   private def closeConnections(toClose: Option[ContainerClient]): Future[Unit] = {
     toClose.map(_.close()).getOrElse(Future.successful(()))
   }
 
   /** This is so that we can easily log the container id during ContainerPool.logContainerStart().
-   *  Null check is here since some tests use stub[Container] so id is null during those tests. */
+    * Null check is here since some tests use stub[Container] so id is null during those tests. */
   override def toString() = if (id == null) "no-container-id" else id.toString
 }
 
@@ -252,6 +324,7 @@ case class Interval(start: Instant, end: Instant) {
 
 case class RunResult(interval: Interval, response: Either[ContainerConnectionError, ContainerResponse]) {
   def ok = response.right.exists(_.ok)
+
   def toBriefString = response.fold(_.toString, _.toString)
 }
 
