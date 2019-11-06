@@ -590,12 +590,18 @@ class ContainerProxy(
           .map {
             case (runInterval, response) =>
               val initRunInterval = initInterval
-                .map(i => Interval(runInterval.start.minusMillis(i.duration.toMillis), runInterval.end))
+                .map(i => {
+                  if (i.annotations.getOrElse("shouldUseForDuration", true) != false) {
+                    Interval(runInterval.start.minusMillis(i.duration.toMillis), runInterval.end)
+                  } else {
+                    runInterval
+                  }
+                })
                 .getOrElse(runInterval)
               ContainerProxy.constructWhiskActivation(
                 job,
                 initInterval,
-                runInterval,
+                initRunInterval,
                 runInterval.duration >= actionTimeout,
                 response)
           }

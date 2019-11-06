@@ -244,7 +244,7 @@ trait Container {
     containerHttpMaxConcurrent = maxConcurrent
     containerHttpTimeout = timeout
     val body = JsObject("value" -> initializer)
-    callContainer("/init", body, timeout, maxConcurrent, retry = true)
+    callContainer("/init", body, containerHttpTimeout, containerHttpMaxConcurrent, retry = true)
       .andThen { // never fails
         case Success(r: RunResult) =>
           transid.finished(
@@ -260,10 +260,14 @@ trait Container {
         result.response match {
           case Left(_) =>
           case Right(value) =>
-            val resp = value.entity.parseJson.asJsObject
-            onStartHandlerOK = resp.fields.getOrElse("onStartHandlerOK", JsFalse) == JsTrue
-            onPauseHandlerOK = resp.fields.getOrElse("onPauseHandlerOK", JsFalse) == JsTrue
-            onFinishHandlerOK = resp.fields.getOrElse("onFinishHandlerOK", JsFalse) == JsTrue
+            try {
+              val resp = value.entity.parseJson.asJsObject
+              onStartHandlerOK = resp.fields.getOrElse("onStartHandlerOK", JsFalse) == JsTrue
+              onPauseHandlerOK = resp.fields.getOrElse("onPauseHandlerOK", JsFalse) == JsTrue
+              onFinishHandlerOK = resp.fields.getOrElse("onFinishHandlerOK", JsFalse) == JsTrue
+            } catch {
+              case _: Throwable =>
+            }
         }
         Future.successful(result)
       }
@@ -278,12 +282,14 @@ trait Container {
       }
       .flatMap { result =>
         if (result.ok) {
-          Future.successful(result.interval)
-        } else if (result.interval.duration >= timeout) {
+          val interval =
+            new Interval(result.interval.start, result.interval.end, Map("shouldUseForDuration" -> !onStartHandlerOK))
+          Future.successful(interval)
+        } else if (result.interval.duration >= containerHttpTimeout) {
           Future.failed(
             InitializationError(
               result.interval,
-              ActivationResponse.developerError(Messages.timedoutActivation(timeout, true))))
+              ActivationResponse.developerError(Messages.timedoutActivation(containerHttpTimeout, true))))
         } else {
           Future.failed(
             InitializationError(
@@ -394,7 +400,7 @@ case class BlackboxStartupError(msg: String) extends ContainerStartupError(msg)
 /** Indicates an error while initializing a container */
 case class InitializationError(interval: Interval, response: ActivationResponse) extends Exception(response.toString)
 
-case class Interval(start: Instant, end: Instant) {
+case class Interval(start: Instant, end: Instant, annotations: Map[String, Any] = Map()) {
   def duration = Duration.create(end.toEpochMilli() - start.toEpochMilli(), MILLISECONDS)
 }
 
