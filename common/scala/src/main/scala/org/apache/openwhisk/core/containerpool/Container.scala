@@ -158,8 +158,18 @@ trait Container {
 
     val start = Instant.now().minusMillis(initDuration)
 
-    //TODO JsObject() mit richtigen Daten füllen
-    callContainer("/" + handlerType, JsObject(), containerHttpTimeout, containerHttpMaxConcurrent)
+    val activationId = ActivationId.generate()
+
+    val params = JsObject(
+      "value" -> JsObject(),
+      "namespace" -> activationStoreOptions.msg.user.namespace.name.toJson,
+      "action_name" -> JsString(activationStoreOptions.msg.action.qualifiedNameWithLeadingSlash),
+      "activation_id" -> JsString(activationId.toString),
+      "deadline" -> JsNumber(Instant.now.toEpochMilli + containerHttpTimeout.toMillis),
+    )
+    val body = JsObject(params.fields ++ activationStoreOptions.msg.user.authkey.toEnvironment.fields)
+
+    callContainer("/" + handlerType, body, containerHttpTimeout, containerHttpMaxConcurrent)
       .flatMap { result =>
         val end = Instant.now()
 
@@ -167,7 +177,7 @@ trait Container {
           activationStoreOptions.msg.user.namespace.name.toPath,
           activationStoreOptions.action.name,
           activationStoreOptions.msg.user.subject,
-          ActivationId.generate(),
+          activationId,
           start,
           end,
           None,
