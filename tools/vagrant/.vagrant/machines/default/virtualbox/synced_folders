@@ -1,1 +1,0 @@
-{"virtualbox":{"/home/vagrant/openwhisk":{"guestpath":"/home/vagrant/openwhisk","hostpath":"/home/durgen/Documents/SMILE/openwhisk","disabled":false,"__vagrantfile":true},"/vagrant":{"guestpath":"/vagrant","hostpath":"/home/durgen/Documents/SMILE/openwhisk/tools/vagrant","disabled":false,"__vagrantfile":true}}}
