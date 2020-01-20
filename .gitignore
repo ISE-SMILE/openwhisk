@@ -18,6 +18,7 @@ results
 !/ansible/environments/docker-machine
 !/ansible/environments/local
 !/ansible/environments/mac
+!/ansible/environments/vagrant
 
 # Eclipse
 bin/
@@ -45,6 +46,9 @@ build/
 
 # NodeJS
 node_modules
+
+# Vagrant
+.vagrant*
 
 # IntelliJ
 .idea
