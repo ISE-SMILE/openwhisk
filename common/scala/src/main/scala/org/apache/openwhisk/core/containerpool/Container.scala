@@ -24,14 +24,30 @@ import akka.event.Logging.InfoLevel
 import akka.stream.scaladsl.Source
 import akka.util.ByteString
 import pureconfig._
-import pureconfig.generic.auto._
 import spray.json.DefaultJsonProtocol._
 import spray.json.JsObject
+import spray.json._
 import org.apache.openwhisk.common.{Logging, LoggingMarkers, TransactionId}
 import org.apache.openwhisk.core.ConfigKeys
+import org.apache.openwhisk.core.connector.ActivationMessage
+import org.apache.openwhisk.core.containerpool.logging.LogCollectingException
+import org.apache.openwhisk.core.database.UserContext
 import org.apache.openwhisk.core.entity.ActivationResponse.{ContainerConnectionError, ContainerResponse}
-import org.apache.openwhisk.core.entity.{ActivationEntityLimit, ActivationResponse, ByteSize}
+import org.apache.openwhisk.core.entity.{
+  ActivationEntityLimit,
+  ActivationId,
+  ActivationLogs,
+  ActivationResponse,
+  ByteSize,
+  ExecutableWhiskAction,
+  Identity,
+  Parameters,
+  WhiskActivation
+}
+
+/** important, otherwise the config cannot be read correctly */
 import org.apache.openwhisk.core.entity.size._
+
 import org.apache.openwhisk.http.Messages
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -46,9 +62,16 @@ import scala.util.{Failure, Success}
 case class ContainerId(asString: String) {
   require(asString.nonEmpty, "ContainerId must not be empty")
 }
+
 case class ContainerAddress(host: String, port: Int = 8080) {
   require(host.nonEmpty, "ContainerIp must not be empty")
 }
+
+case class ActivationStoreOptions(
+  action: ExecutableWhiskAction,
+  msg: ActivationMessage,
+  storeActivation: (TransactionId, WhiskActivation, UserContext) => Future[Any],
+  collectLogs: (TransactionId, Identity, WhiskActivation, Container, ExecutableWhiskAction) => Future[ActivationLogs])
 
 object Container {
 
@@ -83,18 +106,33 @@ trait Container {
   protected var containerHttpMaxConcurrent: Int = 1
   protected var containerHttpTimeout: FiniteDuration = 60.seconds
 
+  protected var onStartHandlerOK = false
+  protected var onPauseHandlerOK = false
+  protected var onFinishHandlerOK = false
+
+  protected var activationStoreOptions: ActivationStoreOptions = _
+
   def containerId: ContainerId = id
 
   /** Stops the container from consuming CPU cycles. NOT thread-safe - caller must synchronize. */
   def suspend()(implicit transid: TransactionId): Future[Unit] = {
-    //close connection first, then close connection pool
-    //(testing pool recreation vs connection closing, time was similar - so using the simpler recreation approach)
-    val toClose = httpConnection
-    httpConnection = None
-    closeConnections(toClose)
+    val waitForHandler = if (onPauseHandlerOK) {
+      callLifecycleHook("onpause")
+    } else {
+      Future.successful({})
+    }
+
+    waitForHandler.flatMap { _ =>
+      //close connection first, then close connection pool
+      //(testing pool recreation vs connection closing, time was similar - so using the simpler recreation approach)
+      val toClose = httpConnection
+      httpConnection = None
+      closeConnections(toClose)
+    }
+
   }
 
-  /** Dual of halt. NOT thread-safe - caller must synchronize.*/
+  /** Dual of halt. NOT thread-safe - caller must synchronize. */
   def resume()(implicit transid: TransactionId): Future[Unit] = {
     httpConnection = Some(openConnections(containerHttpTimeout, containerHttpMaxConcurrent))
     Future.successful({})
@@ -105,12 +143,109 @@ trait Container {
 
   /** Completely destroys this instance of the container. */
   def destroy()(implicit transid: TransactionId): Future[Unit] = {
-    closeConnections(httpConnection)
+    val waitForHandler = if (onFinishHandlerOK) {
+      callLifecycleHook("onfinish")
+    } else {
+      Future.successful({})
+    }
+
+    waitForHandler.flatMap { _ =>
+      closeConnections(httpConnection)
+    }
+  }
+
+  def callLifecycleHook(handlerType: String, initDuration: Long = 0)(implicit transid: TransactionId): Future[Unit] = {
+
+    val start = Instant.now().minusMillis(initDuration)
+
+    val activationId = ActivationId.generate()
+
+    val params = JsObject(
+      "value" -> JsObject(),
+      "namespace" -> activationStoreOptions.msg.user.namespace.name.toJson,
+      "action_name" -> JsString(activationStoreOptions.msg.action.qualifiedNameWithLeadingSlash),
+      "activation_id" -> JsString(activationId.toString),
+      "deadline" -> JsNumber(Instant.now.toEpochMilli + containerHttpTimeout.toMillis),
+    )
+    val body = JsObject(params.fields ++ activationStoreOptions.msg.user.authkey.toEnvironment.fields)
+
+    callContainer("/" + handlerType, body, containerHttpTimeout, containerHttpMaxConcurrent)
+      .flatMap { result =>
+        val end = Instant.now()
+
+        val activation = WhiskActivation(
+          activationStoreOptions.msg.user.namespace.name.toPath,
+          activationStoreOptions.action.name,
+          activationStoreOptions.msg.user.subject,
+          activationId,
+          start,
+          end,
+          None,
+          ActivationResponse.success(),
+          ActivationLogs(),
+          activationStoreOptions.action.version,
+          publish = false, {
+            Parameters(WhiskActivation.limitsAnnotation, activationStoreOptions.action.limits.toJson) ++
+              Parameters(
+                WhiskActivation.pathAnnotation,
+                JsString(activationStoreOptions.action.fullyQualifiedName(false).asString)) ++
+              Parameters(WhiskActivation.kindAnnotation, JsString(activationStoreOptions.action.exec.kind)) ++
+              Parameters(WhiskActivation.timeoutAnnotation, JsBoolean(result.interval.duration >= containerHttpTimeout)) ++
+              Parameters("lifecycle_hook_type", handlerType)
+          },
+          Some(Interval(start, end).duration.toMillis))
+
+        /** Indicates reading logs for an activation failed (terminally, truncated) */
+        case class ActivationLogReadingError(activation: WhiskActivation) extends ActivationError
+
+        /** Indicates that something went wrong with an activation and the container should be removed */
+        trait ActivationError extends Exception {
+          val activation: WhiskActivation
+        }
+
+        val activationWithLogs =
+          // Skips log collection entirely, if the limit is set to 0
+          if (activationStoreOptions.action.limits.logs.asMegaBytes == 0.MB) {
+            Future.successful(Right(activation))
+          } else {
+            val start = transid.started(this, LoggingMarkers.INVOKER_COLLECT_LOGS, logLevel = InfoLevel)
+            activationStoreOptions
+              .collectLogs(transid, activationStoreOptions.msg.user, activation, this, activationStoreOptions.action)
+              .andThen {
+                case Success(_) => transid.finished(this, start)
+                case Failure(t) => transid.failed(this, start, s"reading logs failed: $t")
+              }
+              .map(logs => Right(activation.withLogs(logs)))
+              .recover {
+                case LogCollectingException(logs) =>
+                  Left(ActivationLogReadingError(activation.withLogs(logs)))
+                case _ =>
+                  Left(ActivationLogReadingError(activation.withLogs(ActivationLogs(Vector(Messages.logFailure)))))
+              }
+
+          }
+
+        activationWithLogs
+          .map(_.fold(_.activation, identity))
+          .foreach { activation =>
+            // Storing the record. Entirely asynchronous and not waited upon.
+            activationStoreOptions.storeActivation(transid, activation, UserContext(activationStoreOptions.msg.user))
+          }
+
+        activationWithLogs.flatMap { _ =>
+          Future.successful({})
+        }
+      }
   }
 
   /** Initializes code in the container. */
-  def initialize(initializer: JsObject, timeout: FiniteDuration, maxConcurrent: Int)(
-    implicit transid: TransactionId): Future[Interval] = {
+  def initialize(initializer: JsObject,
+                 timeout: FiniteDuration,
+                 maxConcurrent: Int,
+                 activationStoreOptions: ActivationStoreOptions)(implicit transid: TransactionId): Future[Interval] = {
+
+    this.activationStoreOptions = activationStoreOptions
+
     val start = transid.started(
       this,
       LoggingMarkers.INVOKER_ACTIVATION_INIT,
@@ -119,7 +254,7 @@ trait Container {
     containerHttpMaxConcurrent = maxConcurrent
     containerHttpTimeout = timeout
     val body = JsObject("value" -> initializer)
-    callContainer("/init", body, timeout, maxConcurrent, retry = true)
+    callContainer("/init", body, containerHttpTimeout, containerHttpMaxConcurrent, retry = true)
       .andThen { // never fails
         case Success(r: RunResult) =>
           transid.finished(
@@ -132,13 +267,39 @@ trait Container {
           transid.failed(this, start, s"initializiation failed with $t")
       }
       .flatMap { result =>
+        result.response match {
+          case Left(_) =>
+          case Right(value) =>
+            try {
+              val resp = value.entity.parseJson.asJsObject
+              onStartHandlerOK = resp.fields.getOrElse("onStartHandlerOK", JsFalse) == JsTrue
+              onPauseHandlerOK = resp.fields.getOrElse("onPauseHandlerOK", JsFalse) == JsTrue
+              onFinishHandlerOK = resp.fields.getOrElse("onFinishHandlerOK", JsFalse) == JsTrue
+            } catch {
+              case _: Throwable =>
+            }
+        }
+        Future.successful(result)
+      }
+      .flatMap { result =>
+        if (onStartHandlerOK) {
+          callLifecycleHook("onstart", result.interval.duration.toMillis).flatMap { _ =>
+            Future.successful(result)
+          }
+        } else {
+          Future.successful(result)
+        }
+      }
+      .flatMap { result =>
         if (result.ok) {
-          Future.successful(result.interval)
-        } else if (result.interval.duration >= timeout) {
+          val interval =
+            new Interval(result.interval.start, result.interval.end, Map("shouldUseForDuration" -> !onStartHandlerOK))
+          Future.successful(interval)
+        } else if (result.interval.duration >= containerHttpTimeout) {
           Future.failed(
             InitializationError(
               result.interval,
-              ActivationResponse.developerError(Messages.timedoutActivation(timeout, true))))
+              ActivationResponse.developerError(Messages.timedoutActivation(containerHttpTimeout, true))))
         } else {
           Future.failed(
             InitializationError(
@@ -189,10 +350,10 @@ trait Container {
    *
    * Note that `http.post` will not throw an exception, hence the generated Future cannot fail.
    *
-   * @param path relative path to use in the http request
-   * @param body body to send
+   * @param path    relative path to use in the http request
+   * @param body    body to send
    * @param timeout timeout of the request
-   * @param retry whether or not to retry the request
+   * @param retry   whether or not to retry the request
    */
   protected def callContainer(path: String,
                               body: JsObject,
@@ -212,6 +373,7 @@ trait Container {
         RunResult(Interval(started, finished), response)
       }
   }
+
   private def openConnections(timeout: FiniteDuration, maxConcurrent: Int) = {
     if (Container.config.akkaClient) {
       new AkkaContainerClient(addr.host, addr.port, timeout, ActivationEntityLimit.MAX_ACTIVATION_ENTITY_LIMIT, 1024)
@@ -223,12 +385,13 @@ trait Container {
         maxConcurrent)
     }
   }
+
   private def closeConnections(toClose: Option[ContainerClient]): Future[Unit] = {
     toClose.map(_.close()).getOrElse(Future.successful(()))
   }
 
   /** This is so that we can easily log the container id during ContainerPool.logContainerStart().
-   *  Null check is here since some tests use stub[Container] so id is null during those tests. */
+   * Null check is here since some tests use stub[Container] so id is null during those tests. */
   override def toString() = if (id == null) "no-container-id" else id.toString
 }
 
@@ -247,12 +410,13 @@ case class BlackboxStartupError(msg: String) extends ContainerStartupError(msg)
 /** Indicates an error while initializing a container */
 case class InitializationError(interval: Interval, response: ActivationResponse) extends Exception(response.toString)
 
-case class Interval(start: Instant, end: Instant) {
+case class Interval(start: Instant, end: Instant, annotations: Map[String, Any] = Map()) {
   def duration = Duration.create(end.toEpochMilli() - start.toEpochMilli(), MILLISECONDS)
 }
 
 case class RunResult(interval: Interval, response: Either[ContainerConnectionError, ContainerResponse]) {
   def ok = response.right.exists(_.ok)
+
   def toBriefString = response.fold(_.toString, _.toString)
 }
 
@@ -264,3 +428,4 @@ object Interval {
     Interval(now, now)
   }
 }
+
