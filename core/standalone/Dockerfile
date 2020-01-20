@@ -14,13 +14,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
----
-# This playbook deploys Openwhisk Edge servers.
-# The edge is usually populated with NGINX serving as proxy.
-# The CLI also gets built and published for downloading from NGINX.
-# SDKs for blackbox get published to NGINX also.
-
-- hosts: edge
-  roles:
-  - nginx
-  - cli
+FROM scala
+ARG OPENWHISK_JAR
+ENV DOCKER_VERSION=18.06.3-ce
+ENV WSK_VERSION=1.0.0
+ADD init /
+ADD stop waitready /bin/
+RUN chmod +x /bin/stop /bin/waitready ;\
+  curl -sL \
+  https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz \
+  | tar xzvf -  -C /usr/bin --strip 1 docker/docker ;\
+  curl -sL \
+  https://github.com/apache/openwhisk-cli/releases/download/${WSK_VERSION}/OpenWhisk_CLI-${WSK_VERSION}-linux-amd64.tgz \
+  | tar xzvf - -C /usr/bin wsk
+ADD ${OPENWHISK_JAR} /openwhisk-standalone.jar
+WORKDIR /
+EXPOSE 8080
+ENTRYPOINT  ["/init"]

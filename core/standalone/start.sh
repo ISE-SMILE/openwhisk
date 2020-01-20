@@ -1,3 +1,4 @@
+#!/bin/bash
 #
 # Licensed to the Apache Software Foundation (ASF) under one or more
 # contributor license agreements.  See the NOTICE file distributed with
@@ -14,13 +15,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
----
-# This playbook deploys Openwhisk Edge servers.
-# The edge is usually populated with NGINX serving as proxy.
-# The CLI also gets built and published for downloading from NGINX.
-# SDKs for blackbox get published to NGINX also.
-
-- hosts: edge
-  roles:
-  - nginx
-  - cli
+USER="${1:-openwhisk}"
+shift
+docker run --rm -d \
+  -h openwhisk --name openwhisk \
+  -p 3233:3233 -p 3232:3232 \
+  -v //var/run/docker.sock:/var/run/docker.sock \
+ $USER/standalone "$@"
+docker exec openwhisk waitready
+case "$(uname)" in
+ (Linux) xdg-open http://localhost:3232 ;;
+ (Darwin) open http://localhost:3232 ;;
+ (MINGW*) start http://localhost:3232 ;;
+ (*) echo Please use http://localhost:3232 for playground ;;
+esac
