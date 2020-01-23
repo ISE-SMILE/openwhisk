@@ -19,7 +19,7 @@ package org.apache.openwhisk.core.database.memory
 
 import spray.json.{JsArray, JsBoolean, JsNumber, JsObject, JsString, JsTrue}
 import org.apache.openwhisk.core.database.{ActivationHandler, UnsupportedQueryKeys, UnsupportedView, WhisksHandler}
-import org.apache.openwhisk.core.entity.{UserLimits, WhiskEntityQueries}
+import org.apache.openwhisk.core.entity.{UserLimits, WhiskQueries}
 import org.apache.openwhisk.utils.JsHelpers
 
 /**
@@ -28,7 +28,7 @@ import org.apache.openwhisk.utils.JsHelpers
  * are to be supported by any {{{ArtifactStore}}} implementation
  */
 trait MemoryViewMapper {
-  protected val TOP: String = WhiskEntityQueries.TOP
+  protected val TOP: String = WhiskQueries.TOP
 
   def filter(ddoc: String, view: String, startKey: List[Any], endKey: List[Any], d: JsObject, c: JsObject): Boolean
 
@@ -54,13 +54,13 @@ trait MemoryViewMapper {
 
   protected def gte(js: JsObject, name: String, value: Number): Boolean =
     JsHelpers.getFieldPath(js, name) match {
-      case Some(JsNumber(n)) => n.longValue() >= value.longValue()
+      case Some(JsNumber(n)) => n.longValue >= value.longValue
       case _                 => false
     }
 
   protected def lte(js: JsObject, name: String, value: Number): Boolean =
     JsHelpers.getFieldPath(js, name) match {
-      case Some(JsNumber(n)) => n.longValue() <= value.longValue()
+      case Some(JsNumber(n)) => n.longValue <= value.longValue
       case _                 => false
     }
 
@@ -68,7 +68,7 @@ trait MemoryViewMapper {
     val f =
       (js: JsObject) =>
         JsHelpers.getFieldPath(js, name) match {
-          case Some(JsNumber(n)) => n.longValue()
+          case Some(JsNumber(n)) => n.longValue
           case _                 => 0L
       }
     val order = implicitly[Ordering[Long]]
@@ -199,7 +199,7 @@ private object SubjectViewMapper extends MemoryViewMapper {
                       c: JsObject): Boolean = {
     require(startKey == endKey, s"startKey: $startKey and endKey: $endKey must be same for $ddoc/$view")
     (ddoc, view) match {
-      case ("subjects", "identities") =>
+      case (s, "identities") if s.startsWith("subjects") =>
         filterForMatchingSubjectOrNamespace(ddoc, view, startKey, endKey, d)
       case ("namespaceThrottlings", "blockedNamespaces") =>
         filterForBlacklistedNamespace(d)

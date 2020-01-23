@@ -24,9 +24,9 @@ import java.time.format.DateTimeFormatter
 import akka.event.Logging._
 import akka.event.LoggingAdapter
 import kamon.Kamon
-import kamon.metric.{MeasurementUnit, Counter => KCounter, Histogram => KHistogram, Gauge => KGauge}
+import kamon.metric.{MeasurementUnit, Counter => KCounter, Gauge => KGauge, Histogram => KHistogram}
 import kamon.statsd.{MetricKeyGenerator, SimpleMetricKeyGenerator}
-import kamon.system.SystemMetrics
+import kamon.tag.TagSet
 import org.apache.openwhisk.core.entity.ControllerInstanceId
 
 trait Logging {
@@ -83,7 +83,7 @@ trait Logging {
    * @param from Reference, where the method was called from.
    * @param message Message to write to the log if not empty
    */
-  protected[common] def emit(loglevel: LogLevel, id: TransactionId, from: AnyRef, message: => String)
+  protected[common] def emit(loglevel: LogLevel, id: TransactionId, from: AnyRef, message: => String): Unit
 }
 
 /**
@@ -239,31 +239,25 @@ case class LogMarkerToken(
 
   private def createCounter() = {
     if (TransactionId.metricsKamonTags) {
-      Kamon
-        .counter(createName(toString, "counter"))
-        .refine(tags)
+      Kamon.counter(createName(toString, "counter")).withTags(TagSet.from(tags))
     } else {
-      Kamon.counter(createName(toStringWithSubAction, "counter"))
+      Kamon.counter(createName(toStringWithSubAction, "counter")).withoutTags()
     }
   }
 
   private def createHistogram() = {
     if (TransactionId.metricsKamonTags) {
-      Kamon
-        .histogram(createName(toString, "histogram"), measurementUnit)
-        .refine(tags)
+      Kamon.histogram(createName(toString, "histogram"), measurementUnit).withTags(TagSet.from(tags))
     } else {
-      Kamon.histogram(createName(toStringWithSubAction, "histogram"), measurementUnit)
+      Kamon.histogram(createName(toStringWithSubAction, "histogram"), measurementUnit).withoutTags()
     }
   }
 
   private def createGauge() = {
     if (TransactionId.metricsKamonTags) {
-      Kamon
-        .gauge(createName(toString, "gauge"), measurementUnit)
-        .refine(tags)
+      Kamon.gauge(createName(toString, "gauge"), measurementUnit).withTags(TagSet.from(tags))
     } else {
-      Kamon.gauge(createName(toStringWithSubAction, "gauge"), measurementUnit)
+      Kamon.gauge(createName(toStringWithSubAction, "gauge"), measurementUnit).withoutTags()
     }
   }
 
@@ -296,10 +290,6 @@ object LogMarkerToken {
 }
 
 object MetricEmitter {
-  if (TransactionId.metricsKamon) {
-    SystemMetrics.startCollecting()
-  }
-
   def emitCounterMetric(token: LogMarkerToken, times: Long = 1): Unit = {
     if (TransactionId.metricsKamon) {
       token.counter.increment(times)
@@ -314,7 +304,7 @@ object MetricEmitter {
 
   def emitGaugeMetric(token: LogMarkerToken, value: Long): Unit = {
     if (TransactionId.metricsKamon) {
-      token.gauge.set(value)
+      token.gauge.update(value)
     }
   }
 }
@@ -327,7 +317,7 @@ object MetricEmitter {
  */
 class WhiskStatsDMetricKeyGenerator(config: com.typesafe.config.Config) extends MetricKeyGenerator {
   val simpleGen = new SimpleMetricKeyGenerator(config)
-  override def generateKey(name: String, tags: Map[String, String]): String = {
+  override def generateKey(name: String, tags: TagSet): String = {
     val key = simpleGen.generateKey(name, tags)
     if (key.contains(".counter_")) key.replace(".counter_", ".counter.")
     else if (key.contains(".histogram_")) key.replace(".histogram_", ".histogram.")
@@ -350,6 +340,7 @@ object LoggingMarkers {
   private val kafka = "kafka"
   private val loadbalancer = "loadbalancer"
   private val containerClient = "containerClient"
+  private val containerPool = "containerPool"
 
   /*
    * The following markers are used to emit log messages as well as metrics. Add all LogMarkerTokens below to
@@ -488,6 +479,21 @@ object LoggingMarkers {
       MeasurementUnit.none)
   val CONTAINER_CLIENT_RETRIES =
     LogMarkerToken(containerClient, "retries", counter)(MeasurementUnit.none)
+
+  val CONTAINER_POOL_RESCHEDULED_ACTIVATION =
+    LogMarkerToken(containerPool, "rescheduledActivation", counter)(MeasurementUnit.none)
+  val CONTAINER_POOL_RUNBUFFER_COUNT =
+    LogMarkerToken(containerPool, "runBufferCount", counter)(MeasurementUnit.none)
+  val CONTAINER_POOL_RUNBUFFER_SIZE =
+    LogMarkerToken(containerPool, "runBufferSize", counter)(MeasurementUnit.information.megabytes)
+  val CONTAINER_POOL_ACTIVE_COUNT =
+    LogMarkerToken(containerPool, "activeCount", counter)(MeasurementUnit.none)
+  val CONTAINER_POOL_ACTIVE_SIZE =
+    LogMarkerToken(containerPool, "activeSize", counter)(MeasurementUnit.information.megabytes)
+  val CONTAINER_POOL_PREWARM_COUNT =
+    LogMarkerToken(containerPool, "prewarmCount", counter)(MeasurementUnit.none)
+  val CONTAINER_POOL_PREWARM_SIZE =
+    LogMarkerToken(containerPool, "prewarmSize", counter)(MeasurementUnit.information.megabytes)
 
   val INVOKER_TOTALMEM_BLACKBOX = LogMarkerToken(loadbalancer, "totalCapacityBlackBox", counter)(MeasurementUnit.none)
   val INVOKER_TOTALMEM_MANAGED = LogMarkerToken(loadbalancer, "totalCapacityManaged", counter)(MeasurementUnit.none)

@@ -47,8 +47,8 @@ Sample output
             - whisks.v2.1.0-triggers.js
     Processing activations_design_document_for_activations_db.json
             - activations-byDate.js
-    Processing auth_index.json
-            - subjects-identities.js
+    Processing auth_design_document_for_subjects_db_v2.0.0.json
+            - subjects.v2.0.0-identities.js
     Processing filter_design_document.json
     Processing whisks_design_document_for_activations_db_v2.1.0.json
             - whisks.v2.1.0-activations.js
@@ -148,10 +148,10 @@ can be specified by setting environment variable `GITHUB_ACCESS_TOKEN`
 ```bash
 $ ./gradlew :tools:dev:listRepos
 Found 44 repositories
-incubator-openwhisk
-incubator-openwhisk-GitHubSlackBot
-incubator-openwhisk-apigateway
-incubator-openwhisk-catalog
+openwhisk
+openwhisk-GitHubSlackBot
+openwhisk-apigateway
+openwhisk-catalog
 ...
 Stored the list in /openwhisk_home/build/repos/repos.txt
 Stored the JSON details in /openwhisk_home/build/repos/repos.json
@@ -177,10 +177,10 @@ $ ./gradlew :tools:dev:renderModuleDetails
 ```
 
 [1]: https://www.jetbrains.com/help/idea/run-debug-configurations-dialog.html#run_config_common_options
-[2]: https://github.com/apache/incubator-openwhisk/issues/3195
+[2]: https://github.com/apache/openwhisk/issues/3195
 [3]: https://www.jetbrains.com/help/idea/configuring-projects.html#project-formats
 [4]: http://docs.groovy-lang.org/2.4.2/html/gapi/groovy/util/ConfigSlurper.html
 [5]: https://developer.github.com/v3/search/
 [6]: https://help.github.com/articles/creating-a-personal-access-token-for-the-command-line/
 [7]: https://github.com/docker/for-mac/issues/171
-[8]: https://github.com/apache/incubator-openwhisk-devtools/tree/master/docker-compose
+[8]: https://github.com/apache/openwhisk-devtools/tree/master/docker-compose

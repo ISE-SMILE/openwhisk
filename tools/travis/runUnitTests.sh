@@ -34,4 +34,3 @@ cat "$ROOTDIR/tests/src/test/resources/application.conf"
 ./distDocker.sh
 
 ./runTests.sh
-

@@ -26,6 +26,7 @@ import akka.event.Logging.InfoLevel
 import akka.stream.ActorMaterializer
 import org.apache.kafka.clients.producer.RecordMetadata
 import pureconfig._
+import pureconfig.generic.auto._
 import org.apache.openwhisk.common.LoggingMarkers._
 import org.apache.openwhisk.common._
 import org.apache.openwhisk.core.connector._
@@ -80,8 +81,8 @@ abstract class CommonLoadBalancer(config: WhiskConfig,
   actorSystem.scheduler.schedule(10.seconds, 10.seconds)(emitMetrics())
 
   override def activeActivationsFor(namespace: UUID): Future[Int] =
-    Future.successful(activationsPerNamespace.get(namespace).map(_.intValue()).getOrElse(0))
-  override def totalActiveActivations: Future[Int] = Future.successful(totalActivations.intValue())
+    Future.successful(activationsPerNamespace.get(namespace).map(_.intValue).getOrElse(0))
+  override def totalActiveActivations: Future[Int] = Future.successful(totalActivations.intValue)
 
   /**
    * Calculate the duration within which a completion ack must be received for an activation.
@@ -94,13 +95,13 @@ abstract class CommonLoadBalancer(config: WhiskConfig,
    * on invoker behavior that a cold invocation's init duration may be as long as its run duration. Higher factors
    * may account for additional wait times.
    *
-   * Finally, a constant duration is added to the diluted timeout to be lenient towards general delays / wait times.
+   * Finally, a configurable duration is added to the diluted timeout to be lenient towards general delays / wait times.
    *
    * @param actionTimeLimit the action's time limit
    * @return the calculated time duration within which a completion ack must be received
    */
   private def calculateCompletionAckTimeout(actionTimeLimit: FiniteDuration): FiniteDuration = {
-    (actionTimeLimit.max(TimeLimit.STD_DURATION) * lbConfig.timeoutFactor) + 1.minute
+    (actionTimeLimit.max(TimeLimit.STD_DURATION) * lbConfig.timeoutFactor) + lbConfig.timeoutAddon
   }
 
   /**
@@ -204,17 +205,20 @@ abstract class CommonLoadBalancer(config: WhiskConfig,
   protected[loadBalancer] def processAcknowledgement(bytes: Array[Byte]): Future[Unit] = Future {
     val raw = new String(bytes, StandardCharsets.UTF_8)
     AcknowledegmentMessage.parse(raw) match {
-      case Success(m: CompletionMessage) =>
-        processCompletion(
-          m.activationId,
-          m.transid,
-          forced = false,
-          isSystemError = m.isSystemError,
-          invoker = m.invoker)
-        activationFeed ! MessageFeed.Processed
+      case Success(acknowledegment) =>
+        acknowledegment.isSlotFree.foreach { invoker =>
+          processCompletion(
+            acknowledegment.activationId,
+            acknowledegment.transid,
+            forced = false,
+            isSystemError = acknowledegment.isSystemError.getOrElse(false),
+            invoker)
+        }
 
-      case Success(m: ResultMessage) =>
-        processResult(m.response, m.transid)
+        acknowledegment.result.foreach { response =>
+          processResult(acknowledegment.activationId, acknowledegment.transid, response)
+        }
+
         activationFeed ! MessageFeed.Processed
 
       case Failure(t) =>
@@ -228,9 +232,9 @@ abstract class CommonLoadBalancer(config: WhiskConfig,
   }
 
   /** 5. Process the result ack and return it to the user */
-  protected def processResult(response: Either[ActivationId, WhiskActivation], tid: TransactionId): Unit = {
-    val aid = response.fold(l => l, r => r.activationId)
-
+  protected def processResult(aid: ActivationId,
+                              tid: TransactionId,
+                              response: Either[ActivationId, WhiskActivation]): Unit = {
     // Resolve the promise to send the result back to the user.
     // The activation will be removed from the activation slots later, when the completion message
     // is received (because the slot in the invoker is not yet free for new activations).
@@ -238,7 +242,7 @@ abstract class CommonLoadBalancer(config: WhiskConfig,
     logging.info(this, s"received result ack for '$aid'")(tid)
   }
 
-  protected def releaseInvoker(invoker: InvokerInstanceId, entry: ActivationEntry)
+  protected def releaseInvoker(invoker: InvokerInstanceId, entry: ActivationEntry): Unit
 
   // Singletons for counter metrics related to completion acks
   protected val LOADBALANCER_COMPLETION_ACK_REGULAR =

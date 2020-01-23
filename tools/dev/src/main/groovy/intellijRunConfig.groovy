@@ -34,7 +34,7 @@ def configTemplate = '''<component name="ProjectRunConfigurationManager">
     <option name="ENABLE_SWING_INSPECTOR" value="false" />
     <option name="ENV_VARIABLES" />
     <option name="PASS_PARENT_ENVS" value="true" />
-    <module name="${type}_main" />
+    <module name="openwhisk.core.${type}.main" />
     <envs>
       <% env.each { k,v -> %><env name="$k" value="$v" />
       <% } %>
@@ -87,7 +87,7 @@ containerNames.each{cn ->
 
         //Prepare system properties
         def sysProps = getSysProps(envMap,type)
-        // disable log collection. See more at: https://github.com/apache/incubator-openwhisk/issues/3195
+        // disable log collection. See more at: https://github.com/apache/openwhisk/issues/3195
         sysProps += " -Dwhisk.log-limit.max=0 -Dwhisk.log-limit.std=0"
         // disable https protocol for controller and invoker
         sysProps = sysProps.replaceAll("protocol=https", "protocol=http")

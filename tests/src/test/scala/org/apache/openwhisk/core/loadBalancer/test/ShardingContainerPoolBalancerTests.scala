@@ -96,7 +96,11 @@ class ShardingContainerPoolBalancerTests
     IndexedSeq.fill(count)(new NestedSemaphore[FullyQualifiedEntityName](max))
 
   def lbConfig(blackboxFraction: Double, managedFraction: Option[Double] = None) =
-    ShardingContainerPoolBalancerConfig(managedFraction.getOrElse(1.0 - blackboxFraction), blackboxFraction, 1)
+    ShardingContainerPoolBalancerConfig(
+      managedFraction.getOrElse(1.0 - blackboxFraction),
+      blackboxFraction,
+      1,
+      1.minute)
 
   it should "update invoker's state, growing the slots data and keeping valid old data" in {
     // start empty
@@ -429,7 +433,7 @@ class ShardingContainerPoolBalancerTests
   // - no concurrency room and no memory room to launch new containers
   //(1 until maxActivations).foreach { i =>
   (75 until maxActivations).foreach { i =>
-    it should s"reflect concurrent processing ${i} state in containerSlots" in {
+    it should s"reflect concurrent processing $i state in containerSlots" in {
       //each batch will:
       // - submit activations concurrently
       // - wait for activation submission to messaging system (mostly to detect which invoker was assiged
@@ -459,6 +463,7 @@ class ShardingContainerPoolBalancerTests
 
     messaging
   }
+
   def testActivationBatch(numActivations: Int): Unit = {
     //setup mock messaging
     val feedProbe = new FeedFactory {
@@ -498,15 +503,12 @@ class ShardingContainerPoolBalancerTests
         TransactionId.testing,
         actionMetaData.fullyQualifiedName(true),
         actionMetaData.rev,
-        Identity(
-          Subject(),
-          Namespace(invocationNamespace, uuid),
-          BasicAuthenticationAuthKey(uuid, Secret()),
-          Set.empty),
+        Identity(Subject(), Namespace(invocationNamespace, uuid), BasicAuthenticationAuthKey(uuid, Secret())),
         aid,
         ControllerInstanceId("0"),
         blocking = false,
-        content = None)
+        content = None,
+        initArgs = Set.empty)
 
       //send activation to loadbalancer
       aid -> balancer.publish(actionMetaData.toExecutableWhiskAction.get, msg)
@@ -568,8 +570,8 @@ class ShardingContainerPoolBalancerTests
 
   def completeActivation(invoker: InvokerInstanceId, balancer: ShardingContainerPoolBalancer, aid: ActivationId) = {
     //complete activation
-    val ack = CompletionMessage(TransactionId.testing, aid, false, invoker).serialize
-      .getBytes(StandardCharsets.UTF_8)
+    val ack =
+      CompletionMessage(TransactionId.testing, aid, Some(false), invoker).serialize.getBytes(StandardCharsets.UTF_8)
     balancer.processAcknowledgement(ack)
   }
 }

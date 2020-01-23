@@ -44,7 +44,8 @@ import org.apache.openwhisk.core.containerpool.docker.DockerContainerFactoryConf
 import org.apache.openwhisk.core.containerpool.docker.RuncApi
 import org.apache.openwhisk.core.entity.{ByteSize, ExecManifest, InvokerInstanceId}
 import org.apache.openwhisk.core.entity.size._
-import pureconfig.loadConfigOrThrow
+import pureconfig._
+import pureconfig.generic.auto._
 
 @RunWith(classOf[JUnitRunner])
 class DockerContainerFactoryTests
@@ -59,6 +60,7 @@ class DockerContainerFactoryTests
   implicit val config = new WhiskConfig(ExecManifest.requiredProperties)
   ExecManifest.initialize(config) should be a 'success
   val runtimesRegistryConfig = loadConfigOrThrow[RuntimesRegistryConfig](ConfigKeys.runtimesRegistry)
+  val userImagesRegistryConfig = loadConfigOrThrow[RuntimesRegistryConfig](ConfigKeys.userImagesRegistry)
 
   behavior of "DockerContainerFactory"
 
@@ -74,7 +76,7 @@ class DockerContainerFactoryTests
     (dockerApiStub
       .run(_: String, _: Seq[String])(_: TransactionId))
       .expects(
-        image.localImageName(runtimesRegistryConfig.url),
+        image.resolveImageName(Some(runtimesRegistryConfig.url)),
         List(
           "--cpu-shares",
           "32", //should be calculated as 1024/(numcore * sharefactor) via ContainerFactory.cpuShare
@@ -135,6 +137,7 @@ class DockerContainerFactoryTests
           Seq("k1=v1", "k2=v2", "k3"),
           Map("extra1" -> Set("e1", "e2"), "extra2" -> Set("e3", "e4"))),
         runtimesRegistryConfig,
+        userImagesRegistryConfig,
         DockerContainerFactoryConfig(true))(actorSystem, executionContext, logging, dockerApiStub, mock[RuncApi])
 
     val cf = factory.createContainer(tid, "testContainer", image, false, 10.MB, 32)

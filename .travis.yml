@@ -17,11 +17,9 @@
 
 sudo: required
 
-group: deprecated-2017Q3
-
-language: scala
-scala:
-   - 2.12.7
+dist: xenial
+jdk: openjdk8
+language: java
 
 services:
   - docker
@@ -58,8 +56,9 @@ cache:
 
 before_install:
   - ./tools/travis/docker.sh
-  - pip install --upgrade pip setuptools six
-  - pip3 install --upgrade pip setuptools six
+  - sudo apt-get install -y python3-pip
+  - pip install --user --upgrade pip setuptools six
+  - pip3 install --user setuptools six
 
 install:
   - ./tools/travis/setup.sh
@@ -78,6 +77,10 @@ jobs:
       - ./tools/travis/runMultiRuntimeTests.sh
       - ./tools/travis/checkAndUploadLogs.sh multi-runtime
       name: "Multi-Runtime Tests"
+    - script:
+        - ./tools/travis/runStandaloneTests.sh
+        - ./tools/travis/checkAndUploadLogs.sh standalone
+      name: "Standalone Tests"
     - script:
         - ./tests/performance/preparation/deploy.sh
         - TERM=dumb ./tests/performance/wrk_tests/latency.sh "https://172.17.0.1:10001" "$(cat ansible/files/auth.guest)" ./tests/performance/preparation/actions/noop.js 2m

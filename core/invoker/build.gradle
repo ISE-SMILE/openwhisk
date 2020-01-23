@@ -15,26 +15,24 @@
  * limitations under the License.
  */
 
-apply plugin: 'scala'
-apply plugin: 'application'
-apply plugin: 'eclipse'
-apply plugin: 'maven'
-apply plugin: 'org.scoverage'
+plugins {
+    id 'application'
+    id 'eclipse'
+    id 'maven'
+    id 'org.scoverage'
+    id 'scala'
+}
 
 ext.dockerImageName = 'invoker'
 apply from: '../../gradle/docker.gradle'
 distDocker.dependsOn ':common:scala:distDocker', 'distTar'
 
 project.archivesBaseName = "openwhisk-invoker"
-ext.coverageJars = [
-    "${buildDir}/libs/${project.archivesBaseName}-$version-scoverage.jar",
-    "${project(':common:scala').buildDir.absolutePath}/libs/openwhisk-common-$version-scoverage.jar"
+ext.coverageDirs = [
+    "${buildDir}/classes/scala/scoverage",
+    "${project(':common:scala').buildDir.absolutePath}/classes/scala/scoverage"
 ]
-distDockerCoverage.dependsOn ':common:scala:jarScoverage', 'jarScoverage'
-
-repositories {
-    mavenCentral()
-}
+distDockerCoverage.dependsOn ':common:scala:scoverageClasses', 'scoverageClasses'
 
 dependencies {
     compile "org.scala-lang:scala-library:${gradle.scala.version}"
@@ -43,16 +41,11 @@ dependencies {
     compile ("org.apache.curator:curator-recipes:${gradle.curator.version}") {
         exclude group: 'org.apache.zookeeper', module:'zookeeper'
     }
-    compile ('org.apache.zookeeper:zookeeper:3.4.11') {
+    compile ("org.apache.zookeeper:zookeeper:3.4.11") {
         exclude group: 'org.slf4j'
         exclude group: 'log4j'
         exclude group: 'jline'
     }
-    scoverage gradle.scoverage.deps
-}
-
-tasks.withType(ScalaCompile) {
-    scalaCompileOptions.additionalParameters = gradle.scala.compileFlags
 }
 
 mainClassName = "org.apache.openwhisk.core.invoker.Invoker"

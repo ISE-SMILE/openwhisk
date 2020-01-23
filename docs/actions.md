@@ -27,7 +27,7 @@ observable output.
 An action may be created from a function programmed using a number of [supported languages and runtimes](#languages-and-runtimes),
 or from a binary-compatible executable, or even executables packaged as Docker containers.
 
-* The OpenWhisk CLI [`wsk`](https://github.com/apache/incubator-openwhisk-cli/releases)
+* The OpenWhisk CLI [`wsk`](https://github.com/apache/openwhisk-cli/releases)
 makes it easy to create and invoke actions. Instructions for configuring the CLI are available [here](cli.md).
 * You can also use the [REST API](rest_api.md).
 
@@ -77,6 +77,9 @@ You can create a new runtime in two ways:
 
 - Implementing the [runtime specification](actions-new.md)
 - Using the [ActionLoop engine](actions-actionloop.md) that provides a simplified path for building a new runtime.
+
+Follow the instructions in [Updating Action Language Runtimes](actions-update.md) for updating, removing or renaming
+runtime kinds or language families.
 
 ## The basics
 
@@ -621,7 +624,7 @@ Notice that the list is now sorted alphabetically by namespace, then package nam
 As you write more actions, this list gets longer and it can be helpful to group related actions into [packages](packages.md). To filter your list of actions to just those within a specific package, you can use:
 
 ```
-wsk action list action list /whisk.system/utils
+wsk action list /whisk.system/utils
 ```
 ```
 actions
@@ -667,5 +670,6 @@ Node.js, Python, Swift, Java and Docker actions when using the OpenWhisk Docker 
 * `__OW_API_KEY` the API key for the subject invoking the action, this key may be a restricted API key. This property is absent unless explicitly [requested](./annotations.md#annotations-for-all-actions).
 * `__OW_NAMESPACE` the namespace for the _activation_ (this may not be the same as the namespace for the action).
 * `__OW_ACTION_NAME` the fully qualified name of the running action.
+* `__OW_ACTION_VERSION` the internal version number of the running action.
 * `__OW_ACTIVATION_ID` the activation id for this running action instance.
 * `__OW_DEADLINE` the approximate time when this action will have consumed its entire duration quota (measured in epoch milliseconds).

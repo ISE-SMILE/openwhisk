@@ -18,6 +18,7 @@
 package actionContainers
 
 import org.junit.runner.RunWith
+import org.scalatest.exceptions.TestPendingException
 import org.scalatest.junit.JUnitRunner
 import spray.json.DefaultJsonProtocol._
 import spray.json._
@@ -101,6 +102,7 @@ trait BasicActionRunnerTests extends ActionProxyContainerTestUtils {
    *               "api_key": process.env__OW_API_KEY,
    *               "namespace": process.env.__OW_NAMESPACE,
    *               "action_name": process.env.__OW_ACTION_NAME,
+   *               "action_version": process.env.__OW_ACTION_VERSION,
    *               "activation_id": process.env.__OW_ACTIVATION_ID,
    *               "deadline": process.env.__OW_DEADLINE
    *             }
@@ -109,6 +111,18 @@ trait BasicActionRunnerTests extends ActionProxyContainerTestUtils {
    * @param enforceEmptyErrorStream true to check empty stderr stream
    */
   def testEnv: TestConfig
+
+  /**
+   * Tests that action parameters at initialization time are available before an action
+   * is initialized. The value of a parameter is always a String (and may include the empty string).
+   *
+   * @param code a function returning a dictionary consisting of the following properties
+   *             { "SOME_VAR" : process.env.SOME_VAR,
+   *               "ANOTHER_VAR": process.env.ANOTHER_VAR
+   *             }
+   * @param main the main function
+   */
+  def testEnvParameters: TestConfig = TestConfig("", skipTest = true) // so as not to break downstream dependencies
 
   /**
    * Tests the action to confirm it can handle a large parameter (larger than 128K) when using STDIN.
@@ -260,6 +274,34 @@ trait BasicActionRunnerTests extends ActionProxyContainerTestUtils {
     })
   }
 
+  it should s"export environment variables before initialization" in {
+    val config = testEnvParameters
+
+    if (config.skipTest) {
+      throw new TestPendingException
+    } else {
+      val env = Map("SOME_VAR" -> JsString("xyz"), "ANOTHER_VAR" -> JsString.empty)
+
+      val (out, err) = withActionContainer() { c =>
+        val (initCode, _) = c.init(initPayload(config.code, config.main, Some(env)))
+        initCode should be(200)
+
+        val (runCode, out) = c.run(runPayload(JsObject.empty))
+        runCode should be(200)
+        out shouldBe defined
+        val fields = out.get.fields
+        fields("SOME_VAR") shouldBe JsString("xyz")
+        fields("ANOTHER_VAR") shouldBe JsString("")
+      }
+
+      checkStreams(out, err, {
+        case (o, e) =>
+          if (config.enforceEmptyOutputStream) o shouldBe empty
+          if (config.enforceEmptyErrorStream) e shouldBe empty
+      })
+    }
+  }
+
   it should s"confirm expected environment variables" in {
     val config = testEnv
 
@@ -268,16 +310,19 @@ trait BasicActionRunnerTests extends ActionProxyContainerTestUtils {
       "api_key" -> "abc",
       "namespace" -> "zzz",
       "action_name" -> "xxx",
+      "action_version" -> "0.0.1",
       "activation_id" -> "iii",
       "deadline" -> "123")
 
     val env = props.map { case (k, v) => s"__OW_${k.toUpperCase()}" -> v }
 
+    // the api host is sent as a docker run environment parameter
     val (out, err) = withActionContainer(env.take(1).toMap) { c =>
       val (initCode, _) = c.init(initPayload(config.code, config.main))
       initCode should be(200)
 
-      val (runCode, out) = c.run(runPayload(JsObject.empty, Some(props.toMap.toJson.asJsObject)))
+      // we omit the api host from the run payload so the docker run env var is used
+      val (runCode, out) = c.run(runPayload(JsObject.empty, Some(props.drop(1).toMap.toJson.asJsObject)))
       runCode should be(200)
       out shouldBe defined
       props.map {
@@ -298,7 +343,9 @@ trait BasicActionRunnerTests extends ActionProxyContainerTestUtils {
 
   it should s"echo a large input" in {
     val config = testLargeInput
-    if (!config.skipTest) {
+    if (config.skipTest) {
+      throw new TestPendingException
+    } else {
       var passed = true
 
       val (out, err) = withActionContainer() { c =>

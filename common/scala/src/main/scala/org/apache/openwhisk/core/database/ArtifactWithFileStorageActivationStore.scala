@@ -24,7 +24,8 @@ import akka.stream._
 import org.apache.openwhisk.common.{Logging, TransactionId}
 import org.apache.openwhisk.core.ConfigKeys
 import org.apache.openwhisk.core.entity.{DocInfo, _}
-import pureconfig.loadConfigOrThrow
+import pureconfig._
+import pureconfig.generic.auto._
 import spray.json._
 
 import scala.concurrent.Future
@@ -55,9 +56,15 @@ class ArtifactWithFileStorageActivationStore(
   override def store(activation: WhiskActivation, context: UserContext)(
     implicit transid: TransactionId,
     notifier: Option[CacheChangeNotification]): Future[DocInfo] = {
-    val additionalFields = Map(config.userIdField -> context.user.namespace.uuid.toJson)
+    val additionalFieldsForLogs =
+      Map(config.userIdField -> context.user.namespace.uuid.toJson, "namespace" -> context.user.namespace.name.toJson)
+    val additionalFieldsForActivation = Map(config.userIdField -> context.user.namespace.uuid.toJson)
 
-    activationFileStorage.activationToFile(activation, context, additionalFields)
+    activationFileStorage.activationToFileExtended(
+      activation,
+      context,
+      additionalFieldsForLogs,
+      additionalFieldsForActivation)
     super.store(activation, context)
   }
 

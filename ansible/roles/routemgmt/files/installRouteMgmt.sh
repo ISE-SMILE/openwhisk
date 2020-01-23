@@ -72,6 +72,7 @@ $WSK_CLI -i --apihost "$APIHOST" package update --auth "$AUTH"  --shared no "$NA
 echo Creating NPM module .zip files
 cd "$OPENWHISK_HOME/core/routemgmt/getApi"
 cp "$OPENWHISK_HOME/core/routemgmt/common"/*.js .
+sudo apt-get install -y npm
 npm install
 zip -r getApi.zip *
 

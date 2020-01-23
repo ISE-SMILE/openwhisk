@@ -19,6 +19,7 @@ package org.apache.openwhisk.core.entity
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.nio.charset.StandardCharsets.UTF_8
+import java.time.Instant
 import java.util.Base64
 
 import akka.http.scaladsl.model.ContentTypes
@@ -122,7 +123,8 @@ abstract class WhiskActionLikeMetaData(override val name: EntityName) extends Wh
  * @param limits the limits to impose on the action
  * @param version the semantic version
  * @param publish true to share the action or false otherwise
- * @param annotation the set of annotations to attribute to the action
+ * @param annotations the set of annotations to attribute to the action
+ * @param updated the timestamp when the action is updated
  * @throws IllegalArgumentException if any argument is undefined
  */
 @throws[IllegalArgumentException]
@@ -133,7 +135,8 @@ case class WhiskAction(namespace: EntityPath,
                        limits: ActionLimits = ActionLimits(),
                        version: SemVer = SemVer(),
                        publish: Boolean = false,
-                       annotations: Parameters = Parameters())
+                       annotations: Parameters = Parameters(),
+                       override val updated: Instant = WhiskEntity.currentMillis())
     extends WhiskActionLike(name) {
 
   require(exec != null, "exec undefined")
@@ -200,6 +203,7 @@ case class WhiskActionMetaData(namespace: EntityPath,
                                version: SemVer = SemVer(),
                                publish: Boolean = false,
                                annotations: Parameters = Parameters(),
+                               override val updated: Instant = WhiskEntity.currentMillis(),
                                binding: Option[EntityPath] = None)
     extends WhiskActionLikeMetaData(name) {
 
@@ -264,7 +268,7 @@ case class WhiskActionMetaData(namespace: EntityPath,
  * @param limits the limits to impose on the action
  * @param version the semantic version
  * @param publish true to share the action or false otherwise
- * @param annotation the set of annotations to attribute to the action
+ * @param annotations the set of annotations to attribute to the action
  * @param binding the path of the package binding if any
  * @throws IllegalArgumentException if any argument is undefined
  */
@@ -286,12 +290,27 @@ case class ExecutableWhiskAction(namespace: EntityPath,
   /**
    * Gets initializer for action. This typically includes the code to execute,
    * or a zip file containing the executable artifacts.
+   *
+   * @param env optional map of properties to be exported to the environment
    */
-  def containerInitializer: JsObject = {
+  def containerInitializer(env: Map[String, JsValue] = Map.empty): JsObject = {
     val code = Option(exec.codeAsJson).filter(_ != JsNull).map("code" -> _)
+    val envargs = if (env.nonEmpty) {
+      val stringifiedEnvVars = env.map {
+        case (k, v: JsString)  => (k, v)
+        case (k, JsNull)       => (k, JsString.empty)
+        case (k, JsBoolean(v)) => (k, JsString(v.toString))
+        case (k, JsNumber(v))  => (k, JsString(v.toString))
+        case (k, v)            => (k, JsString(v.compactPrint))
+      }
+
+      Some("env" -> JsObject(stringifiedEnvVars))
+    } else None
+
     val base =
       Map("name" -> name.toJson, "binary" -> exec.binary.toJson, "main" -> exec.entryPoint.getOrElse("main").toJson)
-    JsObject(base ++ code)
+
+    JsObject(base ++ envargs ++ code)
   }
 
   def toWhiskAction =
@@ -315,7 +334,7 @@ case class ExecutableWhiskActionMetaData(namespace: EntityPath,
   require(limits != null, "limits undefined")
 
   def toWhiskAction =
-    WhiskActionMetaData(namespace, name, exec, parameters, limits, version, publish, annotations)
+    WhiskActionMetaData(namespace, name, exec, parameters, limits, version, publish, annotations, updated)
       .revision[WhiskActionMetaData](rev)
 
   /**
@@ -327,11 +346,13 @@ case class ExecutableWhiskActionMetaData(namespace: EntityPath,
 }
 
 object WhiskAction extends DocumentFactory[WhiskAction] with WhiskEntityQueries[WhiskAction] with DefaultJsonProtocol {
+  import WhiskActivation.instantSerdes
 
   val execFieldName = "exec"
   val requireWhiskAuthHeader = "x-require-whisk-auth"
 
   override val collectionName = "actions"
+  override val cacheEnabled = true
 
   override implicit val serdes = jsonFormat(
     WhiskAction.apply,
@@ -342,9 +363,8 @@ object WhiskAction extends DocumentFactory[WhiskAction] with WhiskEntityQueries[
     "limits",
     "version",
     "publish",
-    "annotations")
-
-  override val cacheEnabled = true
+    "annotations",
+    "updated")
 
   // overriden to store attached code
   override def put[A >: WhiskAction](db: ArtifactStore[A], doc: WhiskAction, old: Option[WhiskAction])(
@@ -532,7 +552,10 @@ object WhiskActionMetaData
     with WhiskEntityQueries[WhiskActionMetaData]
     with DefaultJsonProtocol {
 
+  import WhiskActivation.instantSerdes
+
   override val collectionName = "actions"
+  override val cacheEnabled = true
 
   override implicit val serdes = jsonFormat(
     WhiskActionMetaData.apply,
@@ -544,9 +567,8 @@ object WhiskActionMetaData
     "version",
     "publish",
     "annotations",
+    "updated",
     "binding")
-
-  override val cacheEnabled = true
 
   /**
    * Resolves an action name if it is contained in a package.

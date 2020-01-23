@@ -29,7 +29,8 @@ import org.apache.openwhisk.core.entity.ExecManifest._
 import org.apache.openwhisk.core.entity.size.SizeInt
 import org.apache.openwhisk.core.entity.size._
 import org.apache.openwhisk.core.entity.size.SizeString
-import pureconfig.loadConfigOrThrow
+import pureconfig._
+import org.apache.openwhisk.http._
 
 /**
  * Exec encodes the executable details of an action. For black
@@ -63,7 +64,7 @@ sealed abstract class ExecMetaDataBase extends Exec {
  * A common super class for all action exec types that contain their executable
  * code explicitly (i.e., any action other than a sequence).
  */
-sealed abstract class CodeExec[+T <% SizeConversion] extends Exec {
+sealed abstract class CodeExec[+T](implicit ev: T => SizeConversion) extends Exec {
 
   /** An entrypoint (typically name of 'main' function). 'None' means a default value will be used. */
   val entryPoint: Option[String]
@@ -193,7 +194,7 @@ protected[core] case class BlackBoxExec(override val image: ImageName,
   override def codeAsJson = code.toJson
   override val sentinelledLogs = native
   override val pull = !native
-  override def size = super.size + image.publicImageName.sizeInBytes
+  override def size = super.size + image.resolveImageName().sizeInBytes
 
   override def inline(bytes: Array[Byte]): BlackBoxExec = {
     val encoded = new String(bytes, StandardCharsets.UTF_8)
@@ -242,6 +243,9 @@ object Exec extends ArgNormalizer[Exec] with DefaultJsonProtocol {
   protected[core] val SEQUENCE = "sequence"
   protected[core] val BLACKBOX = "blackbox"
 
+  // This is for error cases where the action `kind` may not be known.
+  protected[core] val UNKNOWN = "unknown"
+
   private def execManifests = ExecManifest.runtimesManifest
 
   override protected[core] implicit lazy val serdes = new RootJsonFormat[Exec] {
@@ -265,7 +269,10 @@ object Exec extends ArgNormalizer[Exec] with DefaultJsonProtocol {
 
       case b: BlackBoxExec =>
         val base =
-          Map("kind" -> JsString(b.kind), "image" -> JsString(b.image.publicImageName), "binary" -> JsBoolean(b.binary))
+          Map(
+            "kind" -> JsString(b.kind),
+            "image" -> JsString(b.image.resolveImageName()),
+            "binary" -> JsBoolean(b.binary))
         val code = b.code.map("code" -> attFmt[String].write(_))
         val main = b.entryPoint.map("main" -> JsString(_))
         JsObject(base ++ code ++ main)
@@ -317,7 +324,7 @@ object Exec extends ArgNormalizer[Exec] with DefaultJsonProtocol {
           // map "default" virtual runtime versions to the currently blessed actual runtime version
           val manifest = execManifests.resolveDefaultRuntime(kind) match {
             case Some(k) => k
-            case None    => throw new DeserializationException(s"kind '$kind' not in $runtimes")
+            case None    => throw new DeserializationException(Messages.invalidRuntimeError(kind, runtimes))
           }
 
           manifest.attached
@@ -396,7 +403,10 @@ protected[core] object ExecMetaDataBase extends ArgNormalizer[ExecMetaDataBase] 
 
       case b: BlackBoxExecMetaData =>
         val base =
-          Map("kind" -> JsString(b.kind), "image" -> JsString(b.image.publicImageName), "binary" -> JsBoolean(b.binary))
+          Map(
+            "kind" -> JsString(b.kind),
+            "image" -> JsString(b.image.resolveImageName()),
+            "binary" -> JsBoolean(b.binary))
         val main = b.entryPoint.map("main" -> JsString(_))
         JsObject(base ++ main)
     }

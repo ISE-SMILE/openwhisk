@@ -25,7 +25,8 @@ import akka.http.scaladsl.model.Uri
 import akka.http.scaladsl.server.Route
 import akka.stream.ActorMaterializer
 import kamon.Kamon
-import pureconfig.loadConfigOrThrow
+import pureconfig._
+import pureconfig.generic.auto._
 import spray.json.DefaultJsonProtocol._
 import spray.json._
 import org.apache.openwhisk.common.Https.HttpsConfig
@@ -190,7 +191,7 @@ object Controller {
     JsObject(
       "description" -> "OpenWhisk".toJson,
       "support" -> JsObject(
-        "github" -> "https://github.com/apache/incubator-openwhisk/issues".toJson,
+        "github" -> "https://github.com/apache/openwhisk/issues".toJson,
         "slack" -> "http://slack.openwhisk.org".toJson),
       "api_paths" -> apis.toJson,
       "limits" -> JsObject(
@@ -214,12 +215,12 @@ object Controller {
 
   def start(args: Array[String])(implicit actorSystem: ActorSystem, logger: Logging): Unit = {
     ConfigMXBean.register()
-    Kamon.loadReportersFromConfig()
+    Kamon.init()
 
     // Prepare Kamon shutdown
     CoordinatedShutdown(actorSystem).addTask(CoordinatedShutdown.PhaseActorSystemTerminate, "shutdownKamon") { () =>
       logger.info(this, s"Shutting down Kamon with coordinated shutdown")
-      Kamon.stopAllReporters().map(_ => Done)(Implicits.global)
+      Kamon.stopModules().map(_ => Done)(Implicits.global)
     }
 
     // extract configuration data from the environment

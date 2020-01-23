@@ -44,7 +44,8 @@ import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.postfixOps
 import scala.util.{Failure, Success}
 
-import pureconfig.loadConfigOrThrow
+import pureconfig._
+import pureconfig.generic.auto._
 
 protected[actions] trait PrimitiveActions {
   /** The core collections require backend services to be injected in this trait. */
@@ -177,6 +178,7 @@ protected[actions] trait PrimitiveActions {
       activeAckTopicIndex,
       waitForResponse.isDefined,
       args,
+      action.parameters.initParameters,
       cause = cause,
       WhiskTracerProvider.tracer.getTraceContext(transid))
 
@@ -660,7 +662,6 @@ protected[actions] trait PrimitiveActions {
 
   protected val controllerActivationConfig =
     loadConfigOrThrow[ControllerActivationConfig](ConfigKeys.controllerActivation)
-
 }
 
-case class ControllerActivationConfig(pollingFromDb: Boolean)
+case class ControllerActivationConfig(pollingFromDb: Boolean, maxWaitForBlockingActivation: FiniteDuration)

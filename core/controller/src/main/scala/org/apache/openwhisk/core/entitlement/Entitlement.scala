@@ -39,7 +39,7 @@ import org.apache.openwhisk.core.connector.MessagingProvider
 import org.apache.openwhisk.spi.SpiLoader
 import org.apache.openwhisk.spi.Spi
 
-package object types {
+object types {
   type Entitlements = TrieMap[(Subject, String), Set[Privilege]]
 }
 
@@ -202,7 +202,8 @@ protected[core] abstract class EntitlementProvider(
   }
 
   private val kindRestrictor = {
-    import pureconfig.loadConfigOrThrow
+    import pureconfig._
+    import pureconfig.generic.auto._
     import org.apache.openwhisk.core.ConfigKeys
     case class AllowedKinds(whitelist: Option[Set[String]] = None)
     val allowedKinds = loadConfigOrThrow[AllowedKinds](ConfigKeys.runtimes)

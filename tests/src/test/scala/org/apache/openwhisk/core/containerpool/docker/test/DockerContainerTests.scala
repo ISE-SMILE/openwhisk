@@ -115,7 +115,7 @@ class DockerContainerTests
         retry: Boolean = false)(implicit transid: TransactionId): Future[RunResult] = {
         ccRes
       }
-      override protected val waitForLogs = awaitLogs
+      override protected val logCollectingIdleTimeout = awaitLogs
       override protected val filePollInterval = 1.millisecond
     }
   }
@@ -143,7 +143,7 @@ class DockerContainerTests
     val name = "myContainer"
     val container = DockerContainer.create(
       transid = transid,
-      image = Right(image),
+      image = Right(ImageName(image)),
       memory = memory,
       cpuShares = cpuShares,
       environment = environment,
@@ -201,7 +201,8 @@ class DockerContainerTests
     }
     implicit val runc = stub[RuncApi]
 
-    val container = DockerContainer.create(transid = transid, image = Right("image"), dockerRunParameters = parameters)
+    val container =
+      DockerContainer.create(transid = transid, image = Right(ImageName("image")), dockerRunParameters = parameters)
     a[WhiskContainerStartupError] should be thrownBy await(container)
 
     docker.pulls should have size 0
@@ -241,7 +242,7 @@ class DockerContainerTests
     implicit val runc = stub[RuncApi]
 
     val container =
-      DockerContainer.create(transid = transid, image = Right("image"), dockerRunParameters = parameters)
+      DockerContainer.create(transid = transid, image = Right(ImageName("image")), dockerRunParameters = parameters)
     a[WhiskContainerStartupError] should be thrownBy await(container)
 
     docker.pulls should have size 0
@@ -332,7 +333,7 @@ class DockerContainerTests
       DockerContainer.create(transid = transid, image = Left(imageName), dockerRunParameters = parameters)
 
     val exception = the[BlackboxStartupError] thrownBy await(container)
-    exception.msg shouldBe Messages.imagePullError(imageName.publicImageName)
+    exception.msg shouldBe Messages.imagePullError(imageName.resolveImageName())
 
     docker.pulls should have size 1
     docker.runs should have size 1 // run is called as a backup measure in case the image is locally available
@@ -463,7 +464,7 @@ class DockerContainerTests
     }
 
     val runResult = container.run(JsObject.empty, JsObject.empty, 1.second, 1)
-    await(runResult) shouldBe (interval, ActivationResponse.success(Some(result)))
+    await(runResult) shouldBe (interval, ActivationResponse.success(Some(result), Some(2)))
 
     // assert the starting log is there
     val start = LogMarker.parse(logLines.head)

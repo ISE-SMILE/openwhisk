@@ -36,23 +36,26 @@ class UserEventTests extends FlatSpec with Matchers with WskTestHelpers with Str
 
   implicit val wskprops = WskProps()
   implicit val system = ActorSystem("UserEventTestSystem")
-  val config = new WhiskConfig(WhiskConfig.kafkaHosts)
 
   val wsk = new WskRestOperations
 
   val groupid = "kafkatest"
   val topic = "events"
-  val maxPollInterval = 10.seconds
+  val maxPollInterval = 60.seconds
 
-  val consumer = new KafkaConsumerConnector(config.kafkaHosts, groupid, topic)
+  lazy val consumer = new KafkaConsumerConnector(kafkaHosts, groupid, topic)
   val testActionsDir = WhiskProperties.getFileRelativeToWhiskHome("tests/dat/actions")
   behavior of "UserEvents"
 
-  override def afterAll() {
+  override def afterAll(): Unit = {
     consumer.close()
   }
 
-  if (UserEvents.enabled) {
+  def kafkaHosts: String = new WhiskConfig(WhiskConfig.kafkaHosts).kafkaHosts
+
+  def userEventsEnabled: Boolean = UserEvents.enabled
+
+  if (userEventsEnabled) {
     it should "invoke an action and produce user events" in withAssetCleaner(wskprops) { (wp, assetHelper) =>
       val file = Some(TestUtils.getTestActionFilename("hello.js"))
       val name = "testUserEvents"
@@ -74,13 +77,13 @@ class UserEventTests extends FlatSpec with Matchers with WskTestHelpers with Str
           case (_, _, _, msg) => EventMessage.parse(new String(msg, StandardCharsets.UTF_8))
         }
       received.map(event => {
-        event.body match {
+        event.get.body match {
           case a: Activation =>
             Seq(a.statusCode) should contain oneOf (0, 1, 2, 3)
-            event.source should fullyMatch regex "(invoker|controller)\\d+".r
+            event.get.source should fullyMatch regex "(invoker|controller)\\w+".r
           case m: Metric =>
             Seq(m.metricName) should contain oneOf ("ConcurrentInvocations", "ConcurrentRateLimit", "TimedRateLimit")
-            event.source should fullyMatch regex "controller\\d+".r
+            event.get.source should fullyMatch regex "controller\\w+".r
         }
       })
       // produce at least 2 events - an Activation and a 'ConcurrentInvocations' Metric

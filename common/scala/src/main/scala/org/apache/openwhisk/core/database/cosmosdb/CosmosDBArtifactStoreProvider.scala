@@ -29,6 +29,7 @@ import org.apache.openwhisk.core.database._
 import org.apache.openwhisk.core.entity.size._
 import org.apache.openwhisk.core.entity.{DocumentReader, WhiskActivation, WhiskAuth, WhiskEntity}
 import pureconfig._
+import pureconfig.generic.auto._
 import spray.json.RootJsonFormat
 
 import scala.reflect.ClassTag
@@ -40,6 +41,8 @@ case class ClientHolder(client: AsyncDocumentClient) extends Closeable {
 object CosmosDBArtifactStoreProvider extends ArtifactStoreProvider {
   type DocumentClientRef = ReferenceCounted[ClientHolder]#CountedReference
   private val clients = collection.mutable.Map[CosmosDBConfig, ReferenceCounted[ClientHolder]]()
+
+  RetryMetricsCollector.registerIfEnabled()
 
   override def makeStore[D <: DocumentSerializer: ClassTag](useBatching: Boolean)(
     implicit jsonFormat: RootJsonFormat[D],

@@ -18,7 +18,8 @@
 package org.apache.openwhisk.core.containerpool.kubernetes
 
 import akka.actor.ActorSystem
-import pureconfig.loadConfigOrThrow
+import pureconfig._
+import pureconfig.generic.auto._
 
 import scala.concurrent.Await
 import scala.concurrent.ExecutionContext
@@ -42,19 +43,17 @@ class KubernetesContainerFactory(
   label: String,
   config: WhiskConfig,
   containerArgsConfig: ContainerArgsConfig = loadConfigOrThrow[ContainerArgsConfig](ConfigKeys.containerArgs),
-  runtimesRegistryConfig: RuntimesRegistryConfig = loadConfigOrThrow[RuntimesRegistryConfig](
-    ConfigKeys.runtimesRegistry))(implicit actorSystem: ActorSystem, ec: ExecutionContext, logging: Logging)
+  runtimesRegistryConfig: RuntimesRegistryConfig =
+    loadConfigOrThrow[RuntimesRegistryConfig](ConfigKeys.runtimesRegistry),
+  userImagesRegistryConfig: RuntimesRegistryConfig = loadConfigOrThrow[RuntimesRegistryConfig](
+    ConfigKeys.userImagesRegistry))(implicit actorSystem: ActorSystem, ec: ExecutionContext, logging: Logging)
     extends ContainerFactory {
 
   implicit val kubernetes = initializeKubeClient()
 
   private def initializeKubeClient(): KubernetesClient = {
     val config = loadConfigOrThrow[KubernetesClientConfig](ConfigKeys.kubernetes)
-    if (config.invokerAgent.enabled) {
-      new KubernetesClientWithInvokerAgent(config)(ec)
-    } else {
-      new KubernetesClient(config)(ec)
-    }
+    new KubernetesClient(config)(ec)
   }
 
   /** Perform cleanup on init */
@@ -72,11 +71,8 @@ class KubernetesContainerFactory(
                                userProvidedImage: Boolean,
                                memory: ByteSize,
                                cpuShares: Int)(implicit config: WhiskConfig, logging: Logging): Future[Container] = {
-    val image = if (userProvidedImage) {
-      actionImage.publicImageName
-    } else {
-      actionImage.localImageName(runtimesRegistryConfig.url)
-    }
+    val image = actionImage.resolveImageName(Some(
+      ContainerFactory.resolveRegistryConfig(userProvidedImage, runtimesRegistryConfig, userImagesRegistryConfig).url))
 
     KubernetesContainer.create(
       tid,

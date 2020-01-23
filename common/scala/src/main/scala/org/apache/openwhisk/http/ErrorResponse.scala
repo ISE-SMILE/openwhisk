@@ -156,6 +156,11 @@ object Messages {
   def listLimitOutOfRange(collection: String, value: Int, max: Int) = {
     s"The value '$value' is not in the range of 0 to $max for $collection."
   }
+
+  def invalidRuntimeError(kind: String, runtimes: Set[String]) = {
+    s"The specified runtime '$kind' is not supported by this platform. Valid values are: ${runtimes.mkString("'", "', '", "'")}."
+  }
+
   def listSkipOutOfRange(collection: String, value: Int) = {
     s"The value '$value' is not greater than or equal to 0 for $collection."
   }
@@ -165,6 +170,8 @@ object Messages {
     s"Logs were truncated because the total bytes size exceeds the limit of ${limit.toBytes} bytes."
   }
   val logFailure = "There was an issue while collecting your logs. Data might be missing."
+
+  val logWarningDeveloperError = "The action did not initialize or run as expected. Log data might be missing."
 
   /** Error for meta api. */
   val propertyNotFound = "Response does not include requested property."

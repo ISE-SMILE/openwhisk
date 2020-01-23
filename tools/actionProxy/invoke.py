@@ -66,6 +66,10 @@ def dockerHost():
 def containerRoute(args, path):
     return 'http://%s:%s/%s' % (args.host, args.port, path)
 
+class objectify(object):
+    def __init__(self, d):
+        self.__dict__ = d
+
 def parseArgs():
     parser = argparse.ArgumentParser(description='initialize and run an OpenWhisk action container')
     parser.add_argument('-v', '--verbose', help='verbose output', action='store_true')
@@ -76,8 +80,10 @@ def parseArgs():
 
     initmenu = subparsers.add_parser('init', help='initialize container with src or zip/tgz file')
     initmenu.add_argument('-b', '--binary', help='treat artifact as binary', action='store_true')
+    initmenu.add_argument('-r', '--run', nargs='?', default=None, help='run after init')
     initmenu.add_argument('main', nargs='?', default='main', help='name of the "main" entry method for the action')
     initmenu.add_argument('artifact', help='a source file or zip/tgz archive')
+    initmenu.add_argument('env', nargs='?', help='the environment variables to export to the action, either a reference to a file or an inline JSON object', default=None)
 
     runmenu = subparsers.add_parser('run', help='send arguments to container to run action')
     runmenu.add_argument('payload', nargs='?', help='the arguments to send to the action, either a reference to a file or an inline JSON object', default=None)
@@ -93,7 +99,7 @@ def init(args):
     if artifact and (args.binary or artifact.endswith('.zip') or artifact.endswith('tgz') or artifact.endswith('jar')):
         with open(artifact, 'rb') as fp:
             contents = fp.read()
-        contents = base64.b64encode(contents)
+        contents = str(base64.b64encode(contents), 'utf-8')
         binary = True
     elif artifact is not '':
         with(codecs.open(artifact, 'r', 'utf-8')) as fp:
@@ -105,10 +111,22 @@ def init(args):
 
     r = requests.post(
         containerRoute(args, 'init'),
-        json = {"value": {"code": contents,
-                          "binary": binary,
-                          "main": main}})
+        json = {
+            "value": {
+                "code": contents,
+                "binary": binary,
+                "main": main,
+                "env": processPayload(args.env)
+            }
+        })
+
     print(r.text)
+
+    if r.status_code == 200 and args.run is not None:
+        runArgs = objectify({})
+        runArgs.__dict__ = args.__dict__.copy()
+        runArgs.payload = args.run
+        run(runArgs)
 
 def run(args):
     value = processPayload(args.payload)

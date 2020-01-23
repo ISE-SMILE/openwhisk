@@ -19,7 +19,7 @@ mode: deploy
 lean: false
 prompt_user: true
 openwhisk_home: "{{ lookup('env', 'OPENWHISK_HOME') | default(playbook_dir ~ '/..', true) }}"
-openwhisk_cli_home: "{{ lookup('env', 'OPENWHISK_CLI') | default(openwhisk_home ~ '/../incubator-openwhisk-cli', true) }}"
+openwhisk_cli_home: "{{ lookup('env', 'OPENWHISK_CLI') | default(openwhisk_home ~ '/../openwhisk-cli', true) }}"
 exclude_logs_from: []
 
 # This whisk_api_localhost_name_default is used to configure nginx to permit vanity URLs for web actions
@@ -55,7 +55,8 @@ whisk:
 # configuration parameters related to support runtimes (see org.apache.openwhisk.core.entity.ExecManifest for schema of the manifest).
 # briefly the parameters are:
 #
-#   runtimes_registry: optional registry (with trailing slack) where to pull docker images from for runtimes and backbox images
+#   runtimes_registry: optional registry (with trailing slash) where to pull docker images from for default runtimes (in manifest)
+#   user_images_registry: optional registry (with trailing slash) where to pull docker images from for blackbox images
 #
 #   skip_pull_runtimes: this will skip pulling the images to the invoker (images must exist there somehow)
 #
@@ -89,6 +90,7 @@ controller:
   managedFraction: "{{ controller_managed_fraction | default(1.0 - (controller_blackbox_fraction | default(__controller_blackbox_fraction))) }}"
   blackboxFraction: "{{ controller_blackbox_fraction | default(__controller_blackbox_fraction) }}"
   timeoutFactor: "{{ controller_timeout_factor | default(2) }}"
+  timeoutAddon: "{{ controller_timeout_addon | default('1 m') }}"
   instances: "{{ groups['controllers'] | length }}"
   akka:
     provider: cluster
@@ -197,6 +199,7 @@ invoker:
   docker:
     become: "{{ invoker_docker_become | default(false) }}"
     runcdir: "{{ invoker_runcdir | default('/run/docker/runtime-runc/moby') }}"
+    volumes: "{{ invoker_docker_volumes | default([]) }}"
   loglevel: "{{ invoker_loglevel | default(whisk_loglevel) | default('INFO') }}"
   jmxremote:
     jvmArgs: "{% if inventory_hostname in groups['invokers'] %}
@@ -223,7 +226,7 @@ nginx:
   htmldir: "{{ ui_path | default(false) }}"
   dir:
     become: "{{ nginx_dir_become | default(false) }}"
-  version: "{{ nginx_version | default('1.15') }}"
+  version: "{{ nginx_version | default('1.17') }}"
   port:
     http: 80
     https: 443
@@ -339,7 +342,7 @@ catalog_auth_key: "{{ playbook_dir }}/files/auth.whisk.system"
 #
 catalog_repos:
   openwhisk-catalog:
-    url: https://github.com/apache/incubator-openwhisk-catalog.git
+    url: https://github.com/apache/openwhisk-catalog.git
     # Set the local location as the same level as openwhisk home, but it can be changed.
     location: "{{ openwhisk_home }}/../openwhisk-catalog"
     version: "HEAD"
@@ -369,7 +372,7 @@ openwhisk_cli:
   local:
     location: "{{ openwhisk_cli_home }}/build"
   remote:
-    location: "https://github.com/apache/incubator-openwhisk-cli/releases/download/{{ openwhisk_cli_tag }}"
+    location: "https://github.com/apache/openwhisk-cli/releases/download/{{ openwhisk_cli_tag }}"
 
 # Controls access to log directories
 logs:
