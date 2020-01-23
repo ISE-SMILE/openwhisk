@@ -618,6 +618,7 @@ class ContainerProxy(factory: (TransactionId,
       case data: WarmedData =>
         Future.successful(None)
       case _ =>
+
         val owEnv = (authEnvironment ++ environment + ("deadline" -> (Instant.now.toEpochMilli + actionTimeout.toMillis).toString.toJson)) map {
           case (key, value) => "__OW_" + key.toUpperCase -> value
         }
@@ -648,7 +649,13 @@ class ContainerProxy(factory: (TransactionId,
           .map {
             case (runInterval, response) =>
               val initRunInterval = initInterval
-                .map(i => Interval(runInterval.start.minusMillis(i.duration.toMillis), runInterval.end))
+                .map(i => {
+                  if (i.annotations.getOrElse("shouldUseForDuration", true) != false) {
+                    Interval(runInterval.start.minusMillis(i.duration.toMillis), runInterval.end)
+                  } else {
+                    runInterval
+                  }
+                })
                 .getOrElse(runInterval)
               ContainerProxy.constructWhiskActivation(
                 job,
@@ -847,6 +854,7 @@ object ContainerProxy {
           Parameters(WhiskActivation.pathAnnotation, JsString(job.action.fullyQualifiedName(false).asString)) ++
           Parameters(WhiskActivation.kindAnnotation, JsString(job.action.exec.kind)) ++
           Parameters(WhiskActivation.timeoutAnnotation, JsBoolean(isTimeout)) ++
+          Parameters("lifecycle_hook_type", "onrun") ++
           causedBy ++ initTime ++ binding
       })
   }
