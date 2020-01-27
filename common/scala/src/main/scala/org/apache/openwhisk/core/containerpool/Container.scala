@@ -24,6 +24,7 @@ import akka.event.Logging.InfoLevel
 import akka.stream.scaladsl.Source
 import akka.util.ByteString
 import pureconfig._
+import pureconfig.generic.auto._
 import spray.json.DefaultJsonProtocol._
 import spray.json.JsObject
 import spray.json._
@@ -33,18 +34,7 @@ import org.apache.openwhisk.core.connector.ActivationMessage
 import org.apache.openwhisk.core.containerpool.logging.LogCollectingException
 import org.apache.openwhisk.core.database.UserContext
 import org.apache.openwhisk.core.entity.ActivationResponse.{ContainerConnectionError, ContainerResponse}
-import org.apache.openwhisk.core.entity.{
-  ActivationEntityLimit,
-  ActivationId,
-  ActivationLogs,
-  ActivationResponse,
-  ByteSize,
-  ExecutableWhiskAction,
-  Identity,
-  Parameters,
-  WhiskActivation
-}
-
+import org.apache.openwhisk.core.entity.{ActivationEntityLimit, ActivationId, ActivationLogs, ActivationResponse, ByteSize, ExecutableWhiskAction, Identity, Parameters, WhiskActivation}
 /** important, otherwise the config cannot be read correctly */
 import org.apache.openwhisk.core.entity.size._
 
@@ -67,11 +57,16 @@ case class ContainerAddress(host: String, port: Int = 8080) {
   require(host.nonEmpty, "ContainerIp must not be empty")
 }
 
+trait Applieable {
+  def apply(transid: TransactionId, user: Identity, activation: WhiskActivation, container: Container, action: ExecutableWhiskAction) : Future[ActivationLogs]
+
+}
+
 case class ActivationStoreOptions(
   action: ExecutableWhiskAction,
   msg: ActivationMessage,
   storeActivation: (TransactionId, WhiskActivation, UserContext) => Future[Any],
-  collectLogs: (TransactionId, Identity, WhiskActivation, Container, ExecutableWhiskAction) => Future[ActivationLogs])
+  collectLogs: Applieable)
 
 object Container {
 

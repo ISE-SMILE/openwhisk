@@ -82,7 +82,7 @@ object InvokerReactive extends InvokerProvider {
    * @param action action that was activated
    * @return logs for the given activation
    */
-  trait LogsCollector {
+  trait LogsCollector extends Applieable {
     def logsToBeCollected(action: ExecutableWhiskAction): Boolean = action.limits.logs.asMegaBytes != 0.MB
 
     def apply(transid: TransactionId,

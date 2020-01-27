@@ -622,12 +622,13 @@ class ContainerProxy(factory: (TransactionId,
         val owEnv = (authEnvironment ++ environment + ("deadline" -> (Instant.now.toEpochMilli + actionTimeout.toMillis).toString.toJson)) map {
           case (key, value) => "__OW_" + key.toUpperCase -> value
         }
-
+        val options = ActivationStoreOptions(job.action, job.msg, storeActivation, collectLogs)
         container
           .initialize(
             job.action.containerInitializer(env ++ owEnv),
             actionTimeout,
-            job.action.limits.concurrency.maxConcurrent)
+            job.action.limits.concurrency.maxConcurrent,
+            options)
           .map(Some(_))
     }
 
@@ -805,7 +806,7 @@ object ContainerProxy {
    * Creates a WhiskActivation ready to be sent via active ack.
    *
    * @param job the job that was executed
-   * @param interval the time it took to execute the job
+   * @param totalInterval the time it took to execute the job
    * @param response the response to return to the user
    * @return a WhiskActivation to be sent to the user
    */
