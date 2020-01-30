@@ -19,9 +19,9 @@
                 "kind": "nodejs:10",
                 "default": true,
                 "image": {
-                    "prefix": "openwhisk",
+                    "prefix": "smileproject",
                     "name": "action-nodejs-v10",
-                    "tag": "nightly"
+                    "tag": "latest"
                 },
                 "deprecated": false,
                 "attached": {

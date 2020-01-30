@@ -18,9 +18,9 @@
                 "kind": "nodejs:6",
                 "default": false,
                 "image": {
-                    "prefix": "openwhisk",
+                    "prefix": "smileproject",
                     "name": "nodejs6action",
-                    "tag": "nightly"
+                    "tag": "latest"
                 },
                 "deprecated": true,
                 "attached": {
@@ -32,9 +32,9 @@
                 "kind": "nodejs:8",
                 "default": false,
                 "image": {
-                    "prefix": "openwhisk",
+                    "prefix": "smileproject",
                     "name": "action-nodejs-v8",
-                    "tag": "nightly"
+                    "tag": "latest"
                 },
                 "deprecated": false,
                 "attached": {
@@ -46,9 +46,9 @@
                 "kind": "nodejs:10",
                 "default": true,
                 "image": {
-                    "prefix": "openwhisk",
+                    "prefix": "smileproject",
                     "name": "action-nodejs-v10",
-                    "tag": "nightly"
+                    "tag": "latest"
                 },
                 "deprecated": false,
                 "attached": {
@@ -66,9 +66,9 @@
                 "kind": "nodejs:12",
                 "default": false,
                 "image": {
-                    "prefix": "openwhisk",
+                    "prefix": "smileproject",
                     "name": "action-nodejs-v12",
-                    "tag": "nightly"
+                    "tag": "latest"
                 },
                 "deprecated": false,
                 "attached": {
