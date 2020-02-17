@@ -622,7 +622,7 @@ class ContainerProxy(factory: (TransactionId,
         val owEnv = (authEnvironment ++ environment + ("deadline" -> (Instant.now.toEpochMilli + actionTimeout.toMillis).toString.toJson)) map {
           case (key, value) => "__OW_" + key.toUpperCase -> value
         }
-        val options = ActivationStoreOptions(job.action, job.msg, storeActivation, collectLogs)
+        val options = Option(ActivationStoreOptions(job.action,job.msg.user, job.msg.user.authkey, storeActivation, collectLogs))
         container
           .initialize(
             job.action.containerInitializer(env ++ owEnv),

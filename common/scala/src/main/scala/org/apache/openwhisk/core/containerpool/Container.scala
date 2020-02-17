@@ -30,11 +30,10 @@ import spray.json.JsObject
 import spray.json._
 import org.apache.openwhisk.common.{Logging, LoggingMarkers, TransactionId}
 import org.apache.openwhisk.core.ConfigKeys
-import org.apache.openwhisk.core.connector.ActivationMessage
 import org.apache.openwhisk.core.containerpool.logging.LogCollectingException
 import org.apache.openwhisk.core.database.UserContext
 import org.apache.openwhisk.core.entity.ActivationResponse.{ContainerConnectionError, ContainerResponse}
-import org.apache.openwhisk.core.entity.{ActivationEntityLimit, ActivationId, ActivationLogs, ActivationResponse, ByteSize, ExecutableWhiskAction, Identity, Parameters, WhiskActivation}
+import org.apache.openwhisk.core.entity.{ActivationEntityLimit, ActivationId, ActivationLogs, ActivationResponse, ByteSize, EntityName, EntityPath, ExecutableWhiskAction, GenericAuthKey, Identity, Parameters, SemVer, Subject, WhiskActivation}
 /** important, otherwise the config cannot be read correctly */
 import org.apache.openwhisk.core.entity.size._
 
@@ -64,7 +63,8 @@ trait Applieable {
 
 case class ActivationStoreOptions(
   action: ExecutableWhiskAction,
-  msg: ActivationMessage,
+  user: Identity,
+  authkey: GenericAuthKey,
   storeActivation: (TransactionId, WhiskActivation, UserContext) => Future[Any],
   collectLogs: Applieable)
 
@@ -105,7 +105,7 @@ trait Container {
   protected var onPauseHandlerOK = false
   protected var onFinishHandlerOK = false
 
-  protected var activationStoreOptions: ActivationStoreOptions = _
+  protected var activationStoreOptions: Option[ActivationStoreOptions] = _
 
   def containerId: ContainerId = id
 
@@ -155,36 +155,44 @@ trait Container {
 
     val activationId = ActivationId.generate()
 
+    if(activationStoreOptions.isEmpty){
+      logging.info(this,"calling life-cycle hook with empty options")
+    }
+    val authkey = activationStoreOptions.map(x => x.authkey)
+    val action = activationStoreOptions.map(x => x.action)
+    val user = activationStoreOptions.map(x => x.user)
+
+
     val params = JsObject(
       "value" -> JsObject(),
-      "namespace" -> activationStoreOptions.msg.user.namespace.name.toJson,
-      "action_name" -> JsString(activationStoreOptions.msg.action.qualifiedNameWithLeadingSlash),
+      "namespace" -> action.map(x=>x.namespace.toJson).getOrElse(JsString("internal")),
+      "action_name" -> action.map(x=>x.name.toJson).getOrElse(JsString("internal")),
       "activation_id" -> JsString(activationId.toString),
-      "deadline" -> JsNumber(Instant.now.toEpochMilli + containerHttpTimeout.toMillis),
+      "deadline" -> JsNumber(Instant.now.toEpochMilli + containerHttpTimeout.toMillis)
     )
-    val body = JsObject(params.fields ++ activationStoreOptions.msg.user.authkey.toEnvironment.fields)
+
+    val body = JsObject(params.fields ++ authkey.map(x=>x.toEnvironment.fields).getOrElse(Map.empty))
 
     callContainer("/" + handlerType, body, containerHttpTimeout, containerHttpMaxConcurrent)
       .flatMap { result =>
         val end = Instant.now()
 
         val activation = WhiskActivation(
-          activationStoreOptions.msg.user.namespace.name.toPath,
-          activationStoreOptions.action.name,
-          activationStoreOptions.msg.user.subject,
+          action.map(x=>x.namespace).getOrElse(EntityPath("/internal")),
+          action.map(x=>x.name).getOrElse(EntityName("internal")),
+          Subject("internal"),
           activationId,
           start,
           end,
           None,
           ActivationResponse.success(),
           ActivationLogs(),
-          activationStoreOptions.action.version,
+          action.map(x=>x.version).getOrElse(SemVer()),
           publish = false, {
-            Parameters(WhiskActivation.limitsAnnotation, activationStoreOptions.action.limits.toJson) ++
-              Parameters(
-                WhiskActivation.pathAnnotation,
-                JsString(activationStoreOptions.action.fullyQualifiedName(false).asString)) ++
-              Parameters(WhiskActivation.kindAnnotation, JsString(activationStoreOptions.action.exec.kind)) ++
+            action.map(x=>Parameters(WhiskActivation.limitsAnnotation, x.limits.toJson)).getOrElse(Parameters()) ++
+              action.map(x=>Parameters(WhiskActivation.pathAnnotation,
+                JsString(x.fullyQualifiedName(false).asString))).getOrElse(Parameters()) ++
+                  action.map(x=>Parameters(WhiskActivation.kindAnnotation, JsString(x.exec.kind))).getOrElse(Parameters()) ++
               Parameters(WhiskActivation.timeoutAnnotation, JsBoolean(result.interval.duration >= containerHttpTimeout)) ++
               Parameters("lifecycle_hook_type", handlerType)
           },
@@ -200,31 +208,36 @@ trait Container {
 
         val activationWithLogs =
           // Skips log collection entirely, if the limit is set to 0
-          if (activationStoreOptions.action.limits.logs.asMegaBytes == 0.MB) {
+          if (action.forall(x => x.limits.logs.asMegaBytes == 0.MB)) {
             Future.successful(Right(activation))
           } else {
             val start = transid.started(this, LoggingMarkers.INVOKER_COLLECT_LOGS, logLevel = InfoLevel)
-            activationStoreOptions
-              .collectLogs(transid, activationStoreOptions.msg.user, activation, this, activationStoreOptions.action)
-              .andThen {
-                case Success(_) => transid.finished(this, start)
-                case Failure(t) => transid.failed(this, start, s"reading logs failed: $t")
-              }
-              .map(logs => Right(activation.withLogs(logs)))
-              .recover {
-                case LogCollectingException(logs) =>
-                  Left(ActivationLogReadingError(activation.withLogs(logs)))
-                case _ =>
-                  Left(ActivationLogReadingError(activation.withLogs(ActivationLogs(Vector(Messages.logFailure)))))
-              }
-
+            if (activationStoreOptions.isDefined) {
+              activationStoreOptions.get
+                .collectLogs(transid, user.orNull, activation, this, action.orNull)
+                .andThen {
+                  case Success(_) => transid.finished(this, start)
+                  case Failure(t) => transid.failed(this, start, s"reading logs failed: $t")
+                }
+                .map(logs => Right(activation.withLogs(logs)))
+                .recover {
+                  case LogCollectingException(logs) =>
+                    Left(ActivationLogReadingError(activation.withLogs(logs)))
+                  case _ =>
+                    Left(ActivationLogReadingError(activation.withLogs(ActivationLogs(Vector(Messages.logFailure)))))
+                }
+            } else {
+              Future.successful(Right(activation))
+            }
           }
 
         activationWithLogs
           .map(_.fold(_.activation, identity))
           .foreach { activation =>
             // Storing the record. Entirely asynchronous and not waited upon.
-            activationStoreOptions.storeActivation(transid, activation, UserContext(activationStoreOptions.msg.user))
+            if(activationStoreOptions.isDefined) {
+              activationStoreOptions.get.storeActivation(transid, activation, UserContext(user.orNull))
+            }
           }
 
         activationWithLogs.flatMap { _ =>
@@ -233,13 +246,20 @@ trait Container {
       }
   }
 
+  def initialize(initializer: JsObject,
+                 timeout: FiniteDuration,
+                 maxConcurrent: Int)(implicit transid: TransactionId): Future[Interval] = {
+    return this.initialize(initializer,timeout,maxConcurrent,None)
+  }
+
   /** Initializes code in the container. */
   def initialize(initializer: JsObject,
                  timeout: FiniteDuration,
                  maxConcurrent: Int,
-                 activationStoreOptions: ActivationStoreOptions)(implicit transid: TransactionId): Future[Interval] = {
+                 activationStoreOptions: Option[ActivationStoreOptions] = None)(implicit transid: TransactionId): Future[Interval] = {
 
     this.activationStoreOptions = activationStoreOptions
+
 
     val start = transid.started(
       this,
@@ -277,6 +297,7 @@ trait Container {
         Future.successful(result)
       }
       .flatMap { result =>
+        //call the on Start Hook
         if (onStartHandlerOK) {
           callLifecycleHook("onstart", result.interval.duration.toMillis).flatMap { _ =>
             Future.successful(result)
